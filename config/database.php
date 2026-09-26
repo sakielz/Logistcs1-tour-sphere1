@@ -64,6 +64,26 @@ $dbName = getenv('DB_DATABASE') ?: ($env['DB_DATABASE'] ?? $rootDir . '/database
 $username = getenv('DB_USERNAME') ?: ($env['DB_USERNAME'] ?? 'root');
 $password = getenv('DB_PASSWORD') ?: ($env['DB_PASSWORD'] ?? '');
 
+// Support Supabase / cloud database connection URLs (DB_URL / DATABASE_URL)
+$dbUrl = getenv('DB_URL') ?: (getenv('DATABASE_URL') ?: ($env['DB_URL'] ?? ($env['DATABASE_URL'] ?? null)));
+if (!empty($dbUrl)) {
+    $parsedUrl = parse_url($dbUrl);
+    if ($parsedUrl) {
+        $urlScheme = strtolower($parsedUrl['scheme'] ?? '');
+        if (in_array($urlScheme, ['postgres', 'postgresql', 'pgsql'])) {
+            $driver = 'pgsql';
+            if (empty($port) || $port === '3306') $port = '5432';
+        } elseif ($urlScheme === 'mysql') {
+            $driver = 'mysql';
+        }
+        if (!empty($parsedUrl['host'])) $host = $parsedUrl['host'];
+        if (!empty($parsedUrl['port'])) $port = (string)$parsedUrl['port'];
+        if (!empty($parsedUrl['user'])) $username = urldecode($parsedUrl['user']);
+        if (!empty($parsedUrl['pass'])) $password = urldecode($parsedUrl['pass']);
+        if (!empty($parsedUrl['path'])) $dbName = ltrim($parsedUrl['path'], '/');
+    }
+}
+
 if (!function_exists('initializeSqliteDatabase')) {
     function initializeSqliteDatabase($pdo) {
         $pdo->exec("CREATE TABLE IF NOT EXISTS users (
@@ -170,6 +190,168 @@ if (!function_exists('initializeSqliteDatabase')) {
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );");
 
+        $pdo->exec("CREATE TABLE IF NOT EXISTS warehouses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            warehouse_code TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            location TEXT,
+            capacity INTEGER DEFAULT 0,
+            current_utilization INTEGER DEFAULT 0,
+            type TEXT DEFAULT 'standard',
+            status TEXT DEFAULT 'active',
+            is_archived INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS warehouse_zones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            warehouse_id INTEGER NOT NULL,
+            zone_code TEXT NOT NULL,
+            zone_name TEXT NOT NULL,
+            zone_type TEXT DEFAULT 'standard',
+            capacity INTEGER DEFAULT 0,
+            is_hazmat INTEGER DEFAULT 0,
+            is_cold_chain INTEGER DEFAULT 0,
+            temperature REAL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (warehouse_id) REFERENCES warehouses(id) ON DELETE CASCADE
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS product_serial_numbers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL,
+            serial_number TEXT UNIQUE NOT NULL,
+            lot_number TEXT,
+            status TEXT DEFAULT 'available',
+            location TEXT,
+            warehouse_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS inventory_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL,
+            transaction_type TEXT NOT NULL,
+            quantity INTEGER NOT NULL,
+            previous_balance INTEGER DEFAULT 0,
+            new_balance INTEGER DEFAULT 0,
+            reference_document TEXT,
+            warehouse_id INTEGER,
+            notes TEXT,
+            created_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS purchase_requisitions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pr_number TEXT UNIQUE NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            requested_by INTEGER,
+            department TEXT,
+            required_date TEXT,
+            priority TEXT DEFAULT 'medium',
+            estimated_total REAL DEFAULT 0.00,
+            status TEXT DEFAULT 'draft',
+            review_notes TEXT,
+            is_archived INTEGER DEFAULT 0,
+            created_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS requisition_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            requisition_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL,
+            unit_price REAL,
+            notes TEXT,
+            FOREIGN KEY (requisition_id) REFERENCES purchase_requisitions(id) ON DELETE CASCADE
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS procurement_contracts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contract_number TEXT UNIQUE NOT NULL,
+            supplier_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            start_date TEXT,
+            end_date TEXT,
+            total_value REAL DEFAULT 0.00,
+            status TEXT DEFAULT 'draft',
+            approval_status TEXT DEFAULT 'pending_review',
+            document_path TEXT,
+            is_archived INTEGER DEFAULT 0,
+            created_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS shipments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            shipment_id TEXT UNIQUE NOT NULL,
+            po_id INTEGER,
+            carrier TEXT,
+            tracking_number TEXT,
+            mode TEXT DEFAULT 'road',
+            origin TEXT,
+            destination TEXT,
+            departure_date TEXT,
+            expected_arrival TEXT,
+            actual_arrival TEXT,
+            status TEXT DEFAULT 'pending',
+            freight_cost REAL DEFAULT 0.00,
+            notes TEXT,
+            is_archived INTEGER DEFAULT 0,
+            created_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (po_id) REFERENCES purchase_orders(id)
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_number TEXT UNIQUE NOT NULL,
+            document_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            file_path TEXT,
+            related_module TEXT,
+            related_id INTEGER,
+            status TEXT DEFAULT 'draft',
+            is_archived INTEGER DEFAULT 0,
+            created_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS supplier_performance (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            supplier_id INTEGER NOT NULL,
+            period TEXT NOT NULL,
+            on_time_delivery REAL DEFAULT 0,
+            quality_rate REAL DEFAULT 0,
+            response_time REAL DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS user_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            token TEXT NOT NULL,
+            ip_address TEXT,
+            user_agent TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            expires_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );");
+
         $defaultAdminHash = password_hash('admin@08', PASSWORD_DEFAULT);
         $pdo->exec("INSERT OR IGNORE INTO users (username, email, password, role, full_name, is_active, is_archived) VALUES ('admin', 'admin@globalscm.com', '$defaultAdminHash', 'admin', 'System Administrator', 1, 0);");
 
@@ -218,8 +400,20 @@ try {
         ]);
 
         initializeSqliteDatabase($pdo);
+    } elseif (in_array(strtolower($driver), ['pgsql', 'postgres', 'postgresql'])) {
+        $dsnPort = !empty($port) ? $port : '5432';
+        $dsn = "pgsql:host={$host};port={$dsnPort};dbname={$dbName}";
+        if (strpos($host, 'supabase.co') !== false || getenv('DB_SSLMODE') === 'require') {
+            $dsn .= ";sslmode=require";
+        }
+        $pdo = new PDO($dsn, $username, $password, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+        ]);
     } else {
-        $dsn = 'mysql:host=' . $host . ';port=' . $port . ';dbname=' . $dbName . ';charset=utf8mb4';
+        $dsnPort = !empty($port) ? $port : '3306';
+        $dsn = 'mysql:host=' . $host . ';port=' . $dsnPort . ';dbname=' . $dbName . ';charset=utf8mb4';
         $pdo = new PDO($dsn, $username, $password, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -227,6 +421,7 @@ try {
         ]);
     }
 } catch (Throwable $e) {
+    error_log("[DATABASE CONNECTION NOTICE] Primary connection failed ({$driver}): " . $e->getMessage() . ". Falling back to local SQLite.");
     $fallbackSqlite = $rootDir . '/database/database.sqlite';
     if (is_file($fallbackSqlite)) {
         try {

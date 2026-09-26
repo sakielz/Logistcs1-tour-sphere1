@@ -1,5 +1,7 @@
 <?php
-require __DIR__ . '/config/database.php';
+declare(strict_types=1);
+
+require_once __DIR__ . '/../config/database.php';
 
 $sql = "UPDATE users SET last_login = datetime('now') WHERE email = 'admin@globalscm.com'";
 $pdo->exec($sql);

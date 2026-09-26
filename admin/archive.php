@@ -1,5 +1,3 @@
-scm_system sep 10 2026
-100%
 <?php
 // admin/archive.php
 require_once __DIR__ . '/../config/database.php';
@@ -80,16 +78,31 @@ function getTableSchema(PDO $pdo, string $table, array &$cache): array {
 
     try {
         // Validate the table name against the schema before using it
-        $stmt = $pdo->prepare("SHOW TABLES LIKE ?");
-        $stmt->execute([$table]);
-        if (!$stmt->fetchColumn()) {
-            return $cache[$table] = $info;
-        }
+        $driverName = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driverName === 'sqlite') {
+            $stmt = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?");
+            $stmt->execute([$table]);
+            if (!$stmt->fetchColumn()) {
+                return $cache[$table] = $info;
+            }
 
-        $stmt = $pdo->query("SHOW COLUMNS FROM `$table`");
-        $cols = $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
-        if (empty($cols)) {
-            return $cache[$table] = $info;
+            $stmt = $pdo->query("PRAGMA table_info(`$table`)");
+            $cols = $stmt->fetchAll(PDO::FETCH_COLUMN, 1);
+            if (empty($cols)) {
+                return $cache[$table] = $info;
+            }
+        } else {
+            $stmt = $pdo->prepare("SHOW TABLES LIKE ?");
+            $stmt->execute([$table]);
+            if (!$stmt->fetchColumn()) {
+                return $cache[$table] = $info;
+            }
+
+            $stmt = $pdo->query("SHOW COLUMNS FROM `$table`");
+            $cols = $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
+            if (empty($cols)) {
+                return $cache[$table] = $info;
+            }
         }
 
         $info['exists']         = true;
@@ -393,6 +406,9 @@ foreach ($tables as $table => $info) {
     }
 }
 
+// Compute immutable grand total across all tables to avoid partial sidebar collision
+$grandTotalArchived = array_sum($tabCounts);
+
 // ============================================
 // BUILD DISPLAY ROWS
 // ============================================
@@ -513,57 +529,6 @@ body {
     overflow-x: hidden;
 }
 .admin-layout { display: flex; min-height: 100vh; width: 100%; }
-.sidebar {
-    width: 280px;
-    background: var(--card);
-    border-right: 1px solid var(--border);
-    padding: 24px 16px;
-    position: fixed;
-    top: 0; left: 0; bottom: 0;
-    overflow-y: auto;
-    transition: var(--transition);
-    z-index: 100;
-    display: flex;
-    flex-direction: column;
-    box-shadow: var(--shadow);
-}
-.sidebar-brand {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 30px;
-    padding-bottom: 20px;
-    border-bottom: 1px solid var(--border);
-}
-.sidebar-brand > div { display: flex; flex-direction: column; }
-.sidebar-brand h2 { font-size: 20px; font-weight: 700; color: var(--primary); }
-.sidebar-brand span { font-size: 11px; color: var(--secondary-text); letter-spacing: 1px; text-transform: uppercase; display: block; }
-.sidebar-toggle-btn {
-    display: none;
-    background: none;
-    border: none;
-    font-size: 20px;
-    color: var(--secondary-text);
-    cursor: pointer;
-    padding: 4px 8px;
-}
-.sidebar-overlay {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.4);
-    z-index: 99;
-    backdrop-filter: blur(4px);
-}
-.sidebar-overlay.active { display: block; }
-.main-content {
-    margin-left: 280px;
-    padding: 24px 32px 40px;
-    flex: 1;
-    min-height: 100vh;
-    width: calc(100% - 280px);
-}
 .top-bar {
     display: flex;
     justify-content: space-between;
@@ -986,15 +951,13 @@ table tbody tr:last-child td { border-bottom: none; }
     <main class="main-content">
         <div class="top-bar">
             <div class="page-title">
-                <div>
-                    <h1><i class="fas fa-archive"></i> Archive Management</h1>
-                    <p>View, restore, and manage all archived records across all modules</p>
-                </div>
+                <h1>Archive Management</h1>
+                <p>View, restore, and manage all archived records across all modules</p>
             </div>
             <div class="top-bar-actions">
                 <div class="dropdown">
-                    <button class="btn btn-outline" onclick="toggleExportDropdown(event)">
-                        <i class="fas fa-download"></i> Export Logs
+                    <button class="btn btn-outline" onclick="toggleExportDropdown(event)" type="button">
+                        <i class="fas fa-download"></i> Export Logs <i class="fas fa-chevron-down" style="font-size:10px;margin-left:4px;"></i>
                     </button>
                     <div class="dropdown-content" id="exportDropdown">
                         <?php foreach ($tables as $table => $info): ?>
@@ -1018,6 +981,7 @@ table tbody tr:last-child td { border-bottom: none; }
                 <a href="dashboard.php" class="btn btn-back">
                     <i class="fas fa-arrow-left"></i> Dashboard
                 </a>
+                <?php include 'partials/headbar_actions.php'; ?>
             </div>
         </div>
 
@@ -1077,21 +1041,25 @@ table tbody tr:last-child td { border-bottom: none; }
         <!-- Retention Settings -->
         <div class="retention-settings">
             <div class="info">
-                <i class="fas fa-clock" style="color: var(--primary);"></i>
+                <i class="fas fa-clock" style="color: var(--primary); margin-right: 6px;"></i>
                 <strong>Retention Policy:</strong> Records archived for more than <strong><?php echo (int)$retentionDays; ?> days</strong> are eligible for auto-purge.
             </div>
-            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                <?php foreach ($tables as $table => $info):
-                    $can = ($tableStatus[$table]['has_archived'] ?? false) && ($tableStatus[$table]['has_created_at'] ?? false);
-                ?>
-                    <?php if ($can): ?>
-                        <a href="archive.php?action=purge&table=<?php echo urlencode($table); ?>&days=<?php echo (int)$retentionDays; ?>&tab=<?php echo urlencode($tab); ?>"
-                           class="btn btn-danger btn-sm"
-                           onclick="return confirm('⚠️ This will permanently delete all archived records from <?php echo htmlspecialchars($info['label'], ENT_QUOTES); ?> older than <?php echo (int)$retentionDays; ?> days. Continue?');">
-                            <i class="fas fa-trash"></i> Purge <?php echo htmlspecialchars($info['label']); ?>
-                        </a>
-                    <?php endif; ?>
-                <?php endforeach; ?>
+            <div class="dropdown" style="margin-left: auto;">
+                <button type="button" class="btn btn-outline" onclick="togglePurgeDropdown(event)" style="border-color: #EF4444; color: #DC2626;">
+                    <i class="fas fa-trash-alt"></i> Purge Expired Records <i class="fas fa-chevron-down" style="font-size:10px;margin-left:4px;"></i>
+                </button>
+                <div class="dropdown-content" id="purgeDropdown" style="right: 0; left: auto; min-width: 220px;">
+                    <?php foreach ($tables as $table => $info):
+                        $can = ($tableStatus[$table]['has_archived'] ?? false) && ($tableStatus[$table]['has_created_at'] ?? false);
+                    ?>
+                        <?php if ($can): ?>
+                            <a href="archive.php?action=purge&table=<?php echo urlencode($table); ?>&days=<?php echo (int)$retentionDays; ?>&tab=<?php echo urlencode($tab); ?>"
+                               onclick="return confirm('⚠️ This will permanently delete all archived records from <?php echo htmlspecialchars($info['label'], ENT_QUOTES); ?> older than <?php echo (int)$retentionDays; ?> days. Continue?');">
+                                <i class="fas fa-trash" style="color: #DC2626;"></i> Purge <?php echo htmlspecialchars($info['label']); ?>
+                            </a>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                </div>
             </div>
         </div>
 
@@ -1099,7 +1067,7 @@ table tbody tr:last-child td { border-bottom: none; }
         <div class="tabs-container">
             <button class="tab-btn <?php echo $tab === 'all' ? 'active' : ''; ?>" onclick="switchTab('all')">
                 <i class="fas fa-archive"></i> All
-                <span class="badge"><?php echo (int)$totalArchived; ?></span>
+                <span class="badge"><?php echo (int)$grandTotalArchived; ?></span>
             </button>
             <?php foreach ($tables as $table => $info): ?>
                 <button class="tab-btn <?php echo $tab === $table ? 'active' : ''; ?>" onclick="switchTab('<?php echo $table; ?>')">
@@ -1153,7 +1121,9 @@ table tbody tr:last-child td { border-bottom: none; }
                 </h2>
                 <div style="display: flex; gap: 10px; align-items: center;">
                     <span class="role-badge"><?php echo (int)$totalItems; ?> records</span>
-                    <span class="role-badge">Page <?php echo (int)$currentPage; ?> of <?php echo (int)$totalPages; ?></span>
+                    <?php if ($totalItems > 0): ?>
+                        <span class="role-badge">Page <?php echo (int)$currentPage; ?> of <?php echo (int)$totalPages; ?></span>
+                    <?php endif; ?>
                 </div>
             </div>
             <div class="table-wrapper">
@@ -1318,7 +1288,7 @@ table tbody tr:last-child td { border-bottom: none; }
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                 <?php
-                $excludeFields = ['is_archived'];
+                $excludeFields = ['password', 'is_archived', 'token', 'remember_token'];
                 $longFields    = ['description', 'notes', 'address', 'shipping_address', 'remarks', 'comments'];
                 foreach ($viewRecord as $key => $value):
                     if (in_array($key, $excludeFields, true)) continue;
@@ -1365,7 +1335,15 @@ function switchTab(tab) {
 // ============================================
 function toggleExportDropdown(e) {
     if (e) e.stopPropagation();
+    var p = document.getElementById('purgeDropdown');
+    if (p) p.classList.remove('show');
     document.getElementById('exportDropdown').classList.toggle('show');
+}
+function togglePurgeDropdown(e) {
+    if (e) e.stopPropagation();
+    var exp = document.getElementById('exportDropdown');
+    if (exp) exp.classList.remove('show');
+    document.getElementById('purgeDropdown').classList.toggle('show');
 }
 document.addEventListener('click', function (event) {
     if (!event.target.closest('.dropdown')) {

@@ -4,6 +4,40 @@
  * Global helper functions for the application
  */
 
+// Color constants
+if (!defined('COLOR_PRIMARY')) define('COLOR_PRIMARY', '#2F80ED');
+if (!defined('COLOR_SECONDARY')) define('COLOR_SECONDARY', '#56CCF2');
+if (!defined('COLOR_ACCENT')) define('COLOR_ACCENT', '#27AE60');
+if (!defined('COLOR_BG')) define('COLOR_BG', '#F8FAFC');
+if (!defined('COLOR_CARD')) define('COLOR_CARD', '#FFFFFF');
+if (!defined('COLOR_TEXT')) define('COLOR_TEXT', '#1F2937');
+if (!defined('COLOR_SECONDARY_TEXT')) define('COLOR_SECONDARY_TEXT', '#6B7280');
+if (!defined('COLOR_BORDER')) define('COLOR_BORDER', '#EEF2F7');
+if (!defined('COLOR_DARK_BG')) define('COLOR_DARK_BG', '#0F172A');
+if (!defined('COLOR_DARK_CARD')) define('COLOR_DARK_CARD', '#111827');
+if (!defined('COLOR_DARK_TEXT')) define('COLOR_DARK_TEXT', '#E5E7EB');
+if (!defined('COLOR_DARK_SECONDARY_TEXT')) define('COLOR_DARK_SECONDARY_TEXT', '#94A3B8');
+if (!defined('COLOR_DARK_BORDER')) define('COLOR_DARK_BORDER', '#1F2937');
+
+if (!function_exists('getTheme')) {
+    function getTheme() {
+        global $pdo;
+        if (isset($_SESSION['theme'])) {
+            return $_SESSION['theme'];
+        }
+        if ($pdo) {
+            try {
+                $stmt = $pdo->query("SELECT setting_value FROM system_settings WHERE setting_key = 'theme' LIMIT 1");
+                $val = $stmt ? $stmt->fetchColumn() : null;
+                if ($val) {
+                    return $val;
+                }
+            } catch (Throwable $e) {}
+        }
+        return 'light';
+    }
+}
+
 // ============================================
 // 1. Security Functions
 // ============================================

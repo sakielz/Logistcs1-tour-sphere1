@@ -1,6 +1,8 @@
 <?php
-// reset_admin_password.php
-require_once __DIR__ . '/config/database.php';
+declare(strict_types=1);
+
+// tools/reset_admin_password.php
+require_once __DIR__ . '/../config/database.php';
 
 $email = 'admin@globalscm.com';
 $newPassword = 'admin@08';
