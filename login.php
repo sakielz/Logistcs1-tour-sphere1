@@ -4,80 +4,72 @@ require_once __DIR__ . '/config/database.php';
 require_once __DIR__ . '/includes/function.php';
 
 if (!function_exists('getTheme')) {
-    function getTheme() {
-        return 'light';
-    }
+    function getTheme() { return 'light'; }
 }
 
 // Define color constants if not already defined
-if (!defined('COLOR_PRIMARY')) define('COLOR_PRIMARY', '#2F80ED');
-if (!defined('COLOR_SECONDARY')) define('COLOR_SECONDARY', '#56CCF2');
-if (!defined('COLOR_ACCENT')) define('COLOR_ACCENT', '#27AE60');
-if (!defined('COLOR_BG')) define('COLOR_BG', '#F8FAFC');
-if (!defined('COLOR_CARD')) define('COLOR_CARD', '#FFFFFF');
-if (!defined('COLOR_TEXT')) define('COLOR_TEXT', '#1F2937');
-if (!defined('COLOR_SECONDARY_TEXT')) define('COLOR_SECONDARY_TEXT', '#6B7280');
-if (!defined('COLOR_BORDER')) define('COLOR_BORDER', '#EEF2F7');
-if (!defined('COLOR_DARK_BG')) define('COLOR_DARK_BG', '#0F172A');
-if (!defined('COLOR_DARK_CARD')) define('COLOR_DARK_CARD', '#111827');
-if (!defined('COLOR_DARK_TEXT')) define('COLOR_DARK_TEXT', '#E5E7EB');
-if (!defined('COLOR_DARK_SECONDARY_TEXT')) define('COLOR_DARK_SECONDARY_TEXT', '#94A3B8');
-if (!defined('COLOR_DARK_BORDER')) define('COLOR_DARK_BORDER', '#1F2937');
+if (!defined('COLOR_PRIMARY'))               define('COLOR_PRIMARY', '#1A6FD4');
+if (!defined('COLOR_SECONDARY'))             define('COLOR_SECONDARY', '#00C2FF');
+if (!defined('COLOR_ACCENT'))                define('COLOR_ACCENT', '#27AE60');
+if (!defined('COLOR_BG'))                    define('COLOR_BG', '#F8FAFC');
+if (!defined('COLOR_CARD'))                  define('COLOR_CARD', '#FFFFFF');
+if (!defined('COLOR_TEXT'))                  define('COLOR_TEXT', '#1F2937');
+if (!defined('COLOR_SECONDARY_TEXT'))        define('COLOR_SECONDARY_TEXT', '#6B7280');
+if (!defined('COLOR_BORDER'))                define('COLOR_BORDER', '#EEF2F7');
+if (!defined('COLOR_DARK_BG'))               define('COLOR_DARK_BG', '#0A1628');
+if (!defined('COLOR_DARK_CARD'))             define('COLOR_DARK_CARD', '#111827');
+if (!defined('COLOR_DARK_TEXT'))             define('COLOR_DARK_TEXT', '#E5E7EB');
+if (!defined('COLOR_DARK_SECONDARY_TEXT'))   define('COLOR_DARK_SECONDARY_TEXT', '#94A3B8');
+if (!defined('COLOR_DARK_BORDER'))           define('COLOR_DARK_BORDER', '#1F2937');
 
-// Get theme setting
 $theme = function_exists('getTheme') ? getTheme() : 'light';
 
+// ── Handle POST login ────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = isset($_POST['email']) ? trim($_POST['email']) : '';
-    $password = isset($_POST['password']) ? $_POST['password'] : '';
-    $remember = isset($_POST['remember']) ? true : false;
-    
+    $email    = isset($_POST['email'])    ? trim($_POST['email'])    : '';
+    $password = isset($_POST['password']) ? $_POST['password']       : '';
+
     if (empty($email) || empty($password)) {
-        $error = 'Please enter both email and password';
+        $error = 'Please enter both email / username and password.';
     } else {
         try {
             $loginIdentifier = trim($email);
-            $sql = "SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(:login)) OR LOWER(TRIM(username)) = LOWER(TRIM(:login)) LIMIT 1";
+            $sql  = "SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(:login)) OR LOWER(TRIM(username)) = LOWER(TRIM(:login)) LIMIT 1";
             $stmt = $pdo->prepare($sql);
             $stmt->execute([':login' => $loginIdentifier]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$user) {
-                $error = 'No account was found with that email address or username.';
-                logAudit(null, 'login_failed', 'auth', "Login failed - account not found: $email");
+                $error = 'No account found with that email address or username.';
+                logAudit(null, 'login_failed', 'auth', "Login failed - not found: $email");
             } elseif (!(bool)$user['is_active']) {
                 $error = 'This account is inactive. Please contact your Administrator.';
-                logAudit(null, 'login_failed', 'auth', "Login failed - inactive account: $email");
+                logAudit(null, 'login_failed', 'auth', "Login failed - inactive: $email");
             } elseif ((bool)$user['is_archived']) {
                 $error = 'This account is archived. Please contact your Administrator.';
-                logAudit(null, 'login_failed', 'auth', "Login failed - archived account: $email");
+                logAudit(null, 'login_failed', 'auth', "Login failed - archived: $email");
             } elseif (empty($user['password'])) {
-                $error = 'This account does not have a valid password. Please reset the account password.';
-                logAudit(null, 'login_failed', 'auth', "Login failed - empty password: $email");
+                $error = 'This account has no password set. Contact your Administrator.';
+                logAudit(null, 'login_failed', 'auth', "Login failed - no password: $email");
             } elseif (!password_verify($password, $user['password'])) {
-                $error = 'The password entered is incorrect.';
-                logAudit(null, 'login_failed', 'auth', "Login failed - incorrect password: $email");
+                $error = 'Incorrect password. Please try again.';
+                logAudit(null, 'login_failed', 'auth', "Login failed - wrong password: $email");
             } else {
                 if (session_status() === PHP_SESSION_ACTIVE) {
                     session_regenerate_id(true);
                 }
-
-                $_SESSION['user_id']     = $user['id'];
-                $_SESSION['username']    = $user['username'];
-                $_SESSION['role']        = $user['role'];
-                $_SESSION['full_name']   = $user['full_name'];
-                $_SESSION['email']       = $user['email'];
-                $_SESSION['last_activity'] = time();  // seed inactivity timer
+                $_SESSION['user_id']       = $user['id'];
+                $_SESSION['username']      = $user['username'];
+                $_SESSION['role']          = $user['role'];
+                $_SESSION['full_name']     = $user['full_name'];
+                $_SESSION['email']         = $user['email'];
+                $_SESSION['last_activity'] = time();
 
                 if (password_needs_rehash($user['password'], PASSWORD_DEFAULT)) {
                     $newHash = password_hash($password, PASSWORD_DEFAULT);
-                    $rehashStmt = $pdo->prepare("UPDATE users SET password = ? WHERE id = ?");
-                    $rehashStmt->execute([$newHash, $user['id']]);
+                    $pdo->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([$newHash, $user['id']]);
                 }
-
-                $stmt = $pdo->prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?");
-                $stmt->execute([$user['id']]);
-
+                $pdo->prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?")->execute([$user['id']]);
                 logAudit($user['id'], 'login', 'auth', 'User logged in');
 
                 header('Location: admin/dashboard.php');
@@ -90,520 +82,544 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 }
-?>
-<?php
-// Show session timeout notice
+
+// Session timeout notice
 if (isset($_GET['timeout']) && $_GET['timeout'] === '1') {
-    $timeoutMessage = 'Your session expired due to 2 minutes of inactivity. Please log in again.';
+    $timeoutMessage = 'Your session expired due to 2 minutes of inactivity. Please sign in again.';
 }
 ?>
 <!DOCTYPE html>
-<html lang="en" data-theme="<?php echo $theme; ?>">
+<html lang="en" data-theme="<?php echo htmlspecialchars($theme); ?>">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - GlobalSCM</title>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <title>Sign In – Toursphere Travel & Tours</title>
+    <meta name="description" content="Sign in to Toursphere Travel & Tours Supply Chain & Logistics portal.">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
+        /* ── Reset ───────────────────────────────────── */
+        *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+        /* ── Root Variables ──────────────────────────── */
         :root {
-            --primary: <?php echo COLOR_PRIMARY; ?>;
-            --secondary: <?php echo COLOR_SECONDARY; ?>;
-            --accent: <?php echo COLOR_ACCENT; ?>;
-            --bg: <?php echo COLOR_BG; ?>;
-            --card: <?php echo COLOR_CARD; ?>;
-            --text: <?php echo COLOR_TEXT; ?>;
-            --secondary-text: <?php echo COLOR_SECONDARY_TEXT; ?>;
-            --border: <?php echo COLOR_BORDER; ?>;
+            --brand-dark:   #0A1628;
+            --brand-mid:    #0D2B5E;
+            --brand-blue:   #1A6FD4;
+            --brand-cyan:   #00C2FF;
+            --brand-light:  #56D9FF;
+            --white:        #FFFFFF;
+            --card-bg:      rgba(255,255,255,0.06);
+            --card-border:  rgba(255,255,255,0.14);
+            --input-bg:     rgba(255,255,255,0.09);
+            --input-border: rgba(255,255,255,0.2);
+            --text-main:    #F0F6FF;
+            --text-muted:   rgba(200,220,255,0.65);
+            --shadow:       0 30px 80px rgba(0,0,0,0.55);
         }
-        
-        [data-theme="dark"] {
-            --bg: <?php echo COLOR_DARK_BG; ?>;
-            --card: <?php echo COLOR_DARK_CARD; ?>;
-            --text: <?php echo COLOR_DARK_TEXT; ?>;
-            --secondary-text: <?php echo COLOR_DARK_SECONDARY_TEXT; ?>;
-            --border: <?php echo COLOR_DARK_BORDER; ?>;
-        }
-        
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
+
+        /* ── Body / Background ───────────────────────── */
         body {
             font-family: 'Poppins', sans-serif;
-            background: var(--bg);
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
-            transition: background 0.3s;
+            overflow: hidden;
+            background: var(--brand-dark);
+            position: relative;
         }
-        
-        .login-container {
-            width: 100%;
-            max-width: 440px;
-            padding: 20px;
+
+        /* Animated gradient background */
+        .bg-canvas {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            background: linear-gradient(135deg, #040D1C 0%, #0B1E42 35%, #0F3578 65%, #0A1A3A 100%);
         }
-        
-        .login-card {
-            background: var(--card);
-            border-radius: 20px;
-            padding: 48px 40px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.08);
-            border: 1px solid var(--border);
-            transition: all 0.3s;
-        }
-        
-        .logo {
-            text-align: center;
-            margin-bottom: 8px;
-        }
-        
-        .logo h1 {
-            font-size: 28px;
-            font-weight: 700;
-            color: var(--primary);
-            letter-spacing: -0.5px;
-        }
-        
-        .logo .subtitle {
-            font-size: 12px;
-            color: var(--secondary-text);
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            display: block;
-        }
-        
-        .welcome-text {
-            text-align: center;
-            margin: 30px 0 25px;
-        }
-        
-        .lock-icon {
-            width: 60px;
-            height: 60px;
-            background: var(--primary);
+
+        /* Animated floating orbs */
+        .orb {
+            position: absolute;
             border-radius: 50%;
+            filter: blur(80px);
+            opacity: 0.35;
+            animation: float 12s ease-in-out infinite;
+        }
+        .orb-1 { width:520px; height:520px; background:radial-gradient(circle,#1A6FD4,transparent); top:-120px; left:-160px; animation-delay:0s; }
+        .orb-2 { width:400px; height:400px; background:radial-gradient(circle,#00C2FF,transparent); bottom:-100px; right:-120px; animation-delay:-4s; }
+        .orb-3 { width:280px; height:280px; background:radial-gradient(circle,#0D4A9E,transparent); top:40%; left:55%; animation-delay:-8s; }
+
+        @keyframes float {
+            0%,100% { transform: translateY(0) scale(1); }
+            50%      { transform: translateY(-30px) scale(1.05); }
+        }
+
+        /* Subtle grid overlay */
+        .bg-grid {
+            position: absolute;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(0,194,255,0.04) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0,194,255,0.04) 1px, transparent 1px);
+            background-size: 50px 50px;
+        }
+
+        /* Animated plane trail */
+        .plane-trail {
+            position: absolute;
+            top: 18%;
+            left: -140px;
+            display: flex;
+            align-items: center;
+            gap: 0;
+            animation: flyAcross 18s linear infinite;
+            opacity: 0.18;
+            pointer-events: none;
+        }
+        .plane-trail i { font-size: 28px; color: #56D9FF; }
+        .plane-trail .trail {
+            width: 100px; height: 2px;
+            background: linear-gradient(to left, rgba(86,217,255,0.6), transparent);
+            margin-right: 4px;
+        }
+        @keyframes flyAcross {
+            0%   { left: -140px; opacity: 0; }
+            5%   { opacity: 0.18; }
+            90%  { opacity: 0.18; }
+            100% { left: 110vw; opacity: 0; }
+        }
+
+        /* ── Page layout ─────────────────────────────── */
+        .page-wrapper {
+            position: relative;
+            z-index: 10;
+            width: 100%;
+            max-width: 1100px;
+            min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
+            padding: 30px 20px;
+        }
+
+        /* ── Login card ──────────────────────────────── */
+        .login-card {
+            width: 100%;
+            max-width: 460px;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 28px;
+            padding: 52px 44px 44px;
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            animation: cardIn .5s cubic-bezier(.22,1,.36,1);
+        }
+        @keyframes cardIn {
+            from { opacity:0; transform:translateY(28px) scale(.97); }
+            to   { opacity:1; transform:translateY(0) scale(1); }
+        }
+
+        /* ── Brand header ────────────────────────────── */
+        .brand-header {
+            text-align: center;
+            margin-bottom: 36px;
+        }
+        .brand-logo {
+            width: 110px;
+            height: 110px;
+            object-fit: contain;
             margin: 0 auto 16px;
-            color: white;
-            font-size: 24px;
+            display: block;
+            border-radius: 50%;
+            box-shadow: 0 0 0 4px rgba(0,194,255,0.2), 0 8px 32px rgba(0,100,200,0.5);
+            transition: transform .4s ease, box-shadow .4s ease;
         }
-        
-        .welcome-text h2 {
-            font-size: 22px;
-            font-weight: 600;
-            color: var(--text);
+        .brand-logo:hover {
+            transform: rotate(5deg) scale(1.05);
+            box-shadow: 0 0 0 6px rgba(0,194,255,0.35), 0 12px 40px rgba(0,100,200,0.7);
         }
-        
-        .welcome-text p {
-            color: var(--secondary-text);
-            font-size: 14px;
+        .brand-name {
+            font-size: 26px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            background: linear-gradient(135deg, #FFFFFF 0%, #56D9FF 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            line-height: 1.1;
+        }
+        .brand-tagline {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-muted);
+            letter-spacing: 2.5px;
+            text-transform: uppercase;
             margin-top: 4px;
         }
-        
-        .error-message {
-            background: #FEE2E2;
-            color: #DC2626;
-            padding: 12px 16px;
-            border-radius: 12px;
-            font-size: 14px;
-            margin-bottom: 20px;
-            display: <?php echo isset($error) ? 'flex' : 'none'; ?>;
+        .brand-divider {
+            display: flex;
             align-items: center;
             gap: 10px;
-            border-left: 4px solid #DC2626;
+            margin-top: 14px;
+            color: var(--text-muted);
+            font-size: 11px;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
         }
-        
+        .brand-divider::before, .brand-divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--card-border);
+        }
+
+        /* ── Alert banners ───────────────────────────── */
+        .alert {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 14px 16px;
+            border-radius: 14px;
+            font-size: 13px;
+            line-height: 1.5;
+            margin-bottom: 22px;
+            animation: alertIn .3s ease;
+        }
+        @keyframes alertIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }
+        .alert i { font-size: 16px; margin-top: 1px; flex-shrink: 0; }
+        .alert-error   { background: rgba(239,68,68,0.15);  border: 1px solid rgba(239,68,68,0.35);  color: #FCA5A5; }
+        .alert-warning { background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.3);  color: #FDE68A; }
+
+        /* ── Form ────────────────────────────────────── */
+        .form-heading {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-main);
+            margin-bottom: 22px;
+        }
         .form-group {
             margin-bottom: 18px;
         }
-        
-        .form-group label {
+        .form-label {
             display: block;
-            font-size: 13px;
-            font-weight: 500;
-            color: var(--text);
-            margin-bottom: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
         }
-        
-        .form-group input {
+        .input-wrapper {
+            position: relative;
+        }
+        .input-icon {
+            position: absolute;
+            left: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--brand-cyan);
+            font-size: 15px;
+            pointer-events: none;
+            transition: color .3s;
+        }
+        .form-input {
             width: 100%;
-            padding: 12px 16px;
-            border: 2px solid var(--border);
-            border-radius: 12px;
+            padding: 13px 16px 13px 44px;
+            background: var(--input-bg);
+            border: 1.5px solid var(--input-border);
+            border-radius: 14px;
             font-family: 'Poppins', sans-serif;
             font-size: 14px;
-            transition: all 0.3s;
-            background: var(--bg);
-            color: var(--text);
-        }
-        
-        .form-group input:focus {
+            color: var(--text-main);
+            transition: all .3s ease;
             outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 4px rgba(47, 128, 237, 0.1);
         }
-        
+        .form-input::placeholder { color: rgba(160,200,255,0.4); }
+        .form-input:focus {
+            border-color: var(--brand-cyan);
+            background: rgba(0,194,255,0.08);
+            box-shadow: 0 0 0 4px rgba(0,194,255,0.12);
+        }
+        .form-input:focus + .input-icon,
+        .input-wrapper:focus-within .input-icon { color: var(--brand-light); }
+
+        /* Password toggle */
+        .pw-toggle {
+            position: absolute;
+            right: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 15px;
+            padding: 4px;
+            transition: color .3s;
+        }
+        .pw-toggle:hover { color: var(--brand-cyan); }
+
+        /* ── Form options row ────────────────────────── */
         .form-options {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 24px;
-        }
-        
-        .form-options label {
+            margin-bottom: 28px;
             font-size: 13px;
-            color: var(--secondary-text);
+        }
+        .remember-label {
             display: flex;
             align-items: center;
             gap: 8px;
+            color: var(--text-muted);
             cursor: pointer;
+            user-select: none;
         }
-        
-        .form-options label input[type="checkbox"] {
+        .remember-label input[type="checkbox"] {
             width: 16px;
             height: 16px;
-            accent-color: var(--primary);
+            accent-color: var(--brand-cyan);
             cursor: pointer;
         }
-        
-        .form-options a {
-            color: var(--primary);
+        .forgot-link {
+            color: var(--brand-cyan);
             text-decoration: none;
+            font-weight: 600;
             font-size: 13px;
-            font-weight: 500;
-            transition: all 0.3s;
+            transition: all .3s;
         }
-        
-        .form-options a:hover {
-            text-decoration: underline;
-        }
-        
+        .forgot-link:hover { color: var(--brand-light); text-decoration: underline; }
+
+        /* ── Submit button ───────────────────────────── */
         .btn-login {
             width: 100%;
-            padding: 14px;
-            background: var(--primary);
-            color: white;
+            padding: 15px;
+            background: linear-gradient(135deg, var(--brand-blue) 0%, var(--brand-cyan) 100%);
+            color: #fff;
             border: none;
-            border-radius: 12px;
+            border-radius: 14px;
             font-family: 'Poppins', sans-serif;
             font-size: 16px;
-            font-weight: 600;
+            font-weight: 700;
             cursor: pointer;
-            transition: all 0.3s;
+            transition: all .3s ease;
             display: flex;
             align-items: center;
             justify-content: center;
             gap: 10px;
-        }
-        
-        .btn-login:hover {
-            background: #2563EB;
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(47, 128, 237, 0.3);
-        }
-        
-        .divider {
-            text-align: center;
-            margin: 25px 0;
+            letter-spacing: 0.3px;
+            box-shadow: 0 8px 30px rgba(0,150,255,0.35);
             position: relative;
+            overflow: hidden;
         }
-        
-        .divider::before {
+        .btn-login::after {
             content: '';
             position: absolute;
-            left: 0;
-            top: 50%;
-            width: 100%;
-            height: 1px;
-            background: var(--border);
+            inset: 0;
+            background: linear-gradient(135deg, rgba(255,255,255,0.15) 0%, transparent 60%);
+            opacity: 0;
+            transition: opacity .3s;
         }
-        
-        .divider span {
-            background: var(--card);
-            padding: 0 15px;
-            position: relative;
-            font-size: 13px;
-            color: var(--secondary-text);
+        .btn-login:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 14px 40px rgba(0,150,255,0.5);
         }
-        
-        .social-login {
-            display: flex;
-            gap: 15px;
-            justify-content: center;
-        }
-        
-        .social-btn {
-            flex: 1;
-            padding: 12px;
-            border: 2px solid var(--border);
-            border-radius: 12px;
-            background: var(--bg);
-            font-family: 'Poppins', sans-serif;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.3s;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            color: var(--text);
-        }
-        
-        .social-btn:hover {
-            border-color: var(--primary);
-            background: var(--card);
-        }
-        
-        .signup-link {
-            text-align: center;
-            margin-top: 25px;
-            font-size: 14px;
-            color: var(--secondary-text);
-        }
-        
-        .signup-link a {
-            color: var(--primary);
-            text-decoration: none;
-            font-weight: 500;
-        }
-        
-        .default-credentials {
-            background: rgba(39, 174, 96, 0.08);
-            border: 1px solid var(--accent);
-            border-radius: 10px;
-            padding: 10px 14px;
-            margin-top: 16px;
-            font-size: 12px;
-            text-align: center;
-        }
-        
-        .default-credentials strong {
-            color: var(--text);
-        }
-        
-        .default-credentials .label {
-            color: var(--secondary-text);
-        }
-        
-        .theme-toggle {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: var(--card);
-            border: 1px solid var(--border);
+        .btn-login:hover::after { opacity: 1; }
+        .btn-login:active { transform: translateY(-1px); }
+
+        /* Loading state */
+        .btn-login .spinner {
+            display: none;
+            width: 18px; height: 18px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: #fff;
             border-radius: 50%;
-            width: 44px;
-            height: 44px;
-            font-size: 18px;
-            color: var(--text);
-            cursor: pointer;
-            transition: all 0.3s;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 100;
+            animation: spin .7s linear infinite;
         }
-        
-        .theme-toggle:hover {
-            background: var(--primary);
-            color: white;
-            border-color: var(--primary);
-            transform: scale(1.05);
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .btn-login.loading .spinner { display: block; }
+        .btn-login.loading .btn-text { display: none; }
+
+        /* ── Footer info ─────────────────────────────── */
+        .login-footer {
+            margin-top: 28px;
+            text-align: center;
         }
-        
-        @media (max-width: 480px) {
-            .login-card {
-                padding: 30px 20px;
-            }
-            
-            .social-login {
-                flex-direction: column;
-            }
-            
-            .form-options {
-                flex-direction: column;
-                gap: 10px;
-                align-items: flex-start;
-            }
+        .credentials-hint {
+            background: rgba(0,194,255,0.08);
+            border: 1px solid rgba(0,194,255,0.18);
+            border-radius: 12px;
+            padding: 12px 16px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        .credentials-hint strong { color: rgba(200,235,255,0.85); }
+
+        /* ── Responsive ──────────────────────────────── */
+        @media (max-width: 500px) {
+            .login-card { padding: 36px 24px 30px; border-radius: 20px; }
+            .brand-logo  { width: 88px; height: 88px; }
+            .brand-name  { font-size: 22px; }
         }
     </style>
 </head>
 <body>
-    <button class="theme-toggle" id="themeToggle" title="Toggle Theme">
-        <i class="fas fa-<?php echo $theme === 'dark' ? 'sun' : 'moon'; ?>"></i>
-    </button>
-    
-    <div class="login-container">
-        <div class="login-card">
-            <div class="logo">
-                <h1>GlobalSCM</h1>
-                <span class="subtitle">Supply Chain Management</span>
-            </div>
-            
-            <div class="welcome-text">
-                <div class="lock-icon"><i class="fas fa-warehouse"></i></div>
-                <h2>Welcome to GlobalSCM</h2>
-                <p>Logistics &amp; Data Coordination Portal</p>
-            </div>
-            
-            <?php if (isset($timeoutMessage)): ?>
-            <div class="error-message" style="background:#FEF3C7;color:#92400E;border-left-color:#D97706;">
-                <i class="fas fa-clock"></i>
-                <?php echo htmlspecialchars($timeoutMessage); ?>
-            </div>
-            <?php endif; ?>
 
-            <?php if (isset($error)): ?>
-            <div class="error-message">
-                <i class="fas fa-exclamation-circle"></i>
-                <?php echo $error; ?>
-            </div>
-            <?php endif; ?>
-            
+<!-- ── Background Canvas ──────────────────────────────────────── -->
+<div class="bg-canvas">
+    <div class="bg-grid"></div>
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+    <!-- Animated airplane -->
+    <div class="plane-trail">
+        <span class="trail"></span>
+        <i class="fas fa-plane"></i>
+    </div>
+</div>
 
-            <form method="POST" action="">
-                <div class="form-group">
-                    <label><i class="fas fa-envelope" style="color: var(--primary);"></i> Email Address</label>
-                    <input type="email" name="email" placeholder="admin@globalscm.com" required 
-                           value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>">
-                </div>
-                
-                <div class="form-group">
-                    <label><i class="fas fa-lock" style="color: var(--primary);"></i> Password</label>
-                    <input type="password" name="password" placeholder="Enter your password" required>
-                </div>
-                
-                <div class="form-options">
-                    <label>
-                        <input type="checkbox" name="remember"> Remember me
-                    </label>
-                    <a href="forgot-password.php">Forgot Password?</a>
-                </div>
-                
-                <button type="submit" class="btn-login">
-                    <i class="fas fa-sign-in-alt"></i> Login
-                </button>
-            </form>
-            
-            <div class="default-credentials">
-                <strong>Default Admin Credentials:</strong><br>
-                <span class="label">Email:</span> admin@globalscm.com &nbsp;|&nbsp; 
-                <span class="label">Password:</span> admin@08
+<!-- ── Page Wrapper ───────────────────────────────────────────── -->
+<div class="page-wrapper">
+    <div class="login-card">
+
+        <!-- Brand Header -->
+        <div class="brand-header">
+            <img
+                src="assets/image/toursphere_logo.png"
+                alt="Toursphere Travel & Tours Logo"
+                class="brand-logo"
+                id="brandLogo"
+                onerror="this.style.display='none'; document.getElementById('fallbackIcon').style.display='flex';"
+            >
+            <!-- Fallback icon if logo fails to load -->
+            <div id="fallbackIcon" style="display:none; width:100px;height:100px;border-radius:50%;background:linear-gradient(135deg,#1A6FD4,#00C2FF);align-items:center;justify-content:center;margin:0 auto 16px;font-size:42px;color:#fff;">
+                ✈️
             </div>
-            
-            <div class="divider">
-                <span>Or log in with</span>
+            <div class="brand-name">Toursphere</div>
+            <div class="brand-tagline">Travel &amp; Tours</div>
+            <div class="brand-divider">Supply Chain &amp; Logistics Portal</div>
+        </div>
+
+        <!-- Timeout Warning -->
+        <?php if (isset($timeoutMessage)): ?>
+        <div class="alert alert-warning">
+            <i class="fas fa-clock"></i>
+            <span><?php echo htmlspecialchars($timeoutMessage); ?></span>
+        </div>
+        <?php endif; ?>
+
+        <!-- Error Message -->
+        <?php if (isset($error)): ?>
+        <div class="alert alert-error">
+            <i class="fas fa-exclamation-circle"></i>
+            <span><?php echo htmlspecialchars($error); ?></span>
+        </div>
+        <?php endif; ?>
+
+        <!-- Login Form -->
+        <p class="form-heading">Welcome back 👋</p>
+
+        <form method="POST" action="" id="loginForm" novalidate>
+            <div class="form-group">
+                <label class="form-label" for="email">Email or Username</label>
+                <div class="input-wrapper">
+                    <i class="fas fa-envelope input-icon"></i>
+                    <input
+                        type="text"
+                        id="email"
+                        name="email"
+                        class="form-input"
+                        placeholder="you@toursphere.com"
+                        value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>"
+                        autocomplete="username"
+                        required
+                    >
+                </div>
             </div>
-            
-            <div class="social-login">
-                <button class="social-btn" onclick="showNotification('Google SSO coming soon!', 'info')">
-                    <i class="fab fa-google" style="color: #DB4437;"></i> Google
-                </button>
-                <button class="social-btn" onclick="showNotification('SSO coming soon!', 'info')">
-                    <i class="fas fa-id-card" style="color: var(--primary);"></i> SSO
-                </button>
+
+            <div class="form-group">
+                <label class="form-label" for="password">Password</label>
+                <div class="input-wrapper">
+                    <i class="fas fa-lock input-icon"></i>
+                    <input
+                        type="password"
+                        id="password"
+                        name="password"
+                        class="form-input"
+                        placeholder="Enter your password"
+                        autocomplete="current-password"
+                        required
+                    >
+                    <button type="button" class="pw-toggle" id="pwToggle" aria-label="Toggle password visibility">
+                        <i class="fas fa-eye" id="pwToggleIcon"></i>
+                    </button>
+                </div>
             </div>
-            
-            <div class="signup-link">
-                Don't have an account? <a href="#">Contact your Administrator</a>
+
+            <div class="form-options">
+                <label class="remember-label">
+                    <input type="checkbox" name="remember" id="rememberMe">
+                    Remember me
+                </label>
+                <a href="forgot-password.php" class="forgot-link">Forgot password?</a>
+            </div>
+
+            <button type="submit" class="btn-login" id="loginBtn">
+                <span class="spinner"></span>
+                <span class="btn-text">
+                    <i class="fas fa-sign-in-alt"></i>&nbsp; Sign In
+                </span>
+            </button>
+        </form>
+
+        <!-- Footer hint -->
+        <div class="login-footer">
+            <div class="credentials-hint">
+                <i class="fas fa-shield-alt" style="color:rgba(0,194,255,.6);"></i>
+                &nbsp;Default admin:&nbsp;
+                <strong>admin@globalscm.com</strong>&nbsp;/&nbsp;<strong>admin@08</strong>
             </div>
         </div>
-    </div>
-    
-    <script>
-        document.getElementById('themeToggle').addEventListener('click', function() {
-            const html = document.documentElement;
-            const currentTheme = html.getAttribute('data-theme') || 'light';
-            const newTheme = currentTheme === 'light' ? 'dark' : 'light';
-            
-            fetch('/api/settings.php?action=theme', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: 'theme=' + newTheme
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    html.setAttribute('data-theme', newTheme);
-                    this.innerHTML = '<i class="fas fa-' + (newTheme === 'dark' ? 'sun' : 'moon') + '"></i>';
-                }
-            })
-            .catch(error => {
-                html.setAttribute('data-theme', newTheme);
-                this.innerHTML = '<i class="fas fa-' + (newTheme === 'dark' ? 'sun' : 'moon') + '"></i>';
-            });
+
+    </div><!-- /.login-card -->
+</div><!-- /.page-wrapper -->
+
+<script>
+    // ── Password visibility toggle ──────────────────────
+    var pwInput   = document.getElementById('password');
+    var pwToggle  = document.getElementById('pwToggle');
+    var pwIcon    = document.getElementById('pwToggleIcon');
+
+    pwToggle.addEventListener('click', function () {
+        var isText = pwInput.type === 'text';
+        pwInput.type = isText ? 'password' : 'text';
+        pwIcon.className = isText ? 'fas fa-eye' : 'fas fa-eye-slash';
+    });
+
+    // ── Loading state on submit ──────────────────────────
+    document.getElementById('loginForm').addEventListener('submit', function () {
+        var btn = document.getElementById('loginBtn');
+        btn.classList.add('loading');
+        btn.disabled = true;
+    });
+
+    // ── Subtle logo pulse on hover ───────────────────────
+    var logo = document.getElementById('brandLogo');
+    if (logo) {
+        logo.addEventListener('mouseleave', function () {
+            logo.style.transform = '';
         });
-        
-        function showNotification(message, type) {
-            let container = document.getElementById('notificationContainer');
-            if (!container) {
-                container = document.createElement('div');
-                container.id = 'notificationContainer';
-                container.style.cssText = 'position:fixed;top:20px;right:20px;z-index:9999;max-width:400px;width:100%;';
-                document.body.appendChild(container);
-            }
-            
-            const colors = {
-                info: { bg: '#DBEAFE', text: '#1E40AF', icon: 'ℹ️' }
-            };
-            const color = colors[type] || colors.info;
-            
-            const notification = document.createElement('div');
-            notification.style.cssText = 
-                'background:' + color.bg + ';' +
-                'color:' + color.text + ';' +
-                'padding:15px 20px;' +
-                'border-radius:10px;' +
-                'margin-bottom:10px;' +
-                'box-shadow:0 4px 12px rgba(0,0,0,0.1);' +
-                'font-family:Poppins,sans-serif;' +
-                'font-size:14px;' +
-                'display:flex;' +
-                'align-items:center;' +
-                'gap:12px;' +
-                'animation:slideIn 0.3s ease;' +
-                'border-left:4px solid ' + color.text + ';';
-            
-            notification.innerHTML = 
-                '<span style="font-size:20px;">' + color.icon + '</span>' +
-                '<span style="flex:1;">' + message + '</span>' +
-                '<button onclick="this.parentElement.remove()" style="background:none;border:none;font-size:18px;cursor:pointer;color:' + color.text + ';">×</button>';
-            
-            container.appendChild(notification);
-            
-            setTimeout(function() {
-                if (notification.parentElement) {
-                    notification.style.animation = 'slideOut 0.3s ease forwards';
-                    setTimeout(function() {
-                        if (notification.parentElement) {
-                            notification.remove();
-                        }
-                    }, 300);
-                }
-            }, 5000);
+    }
+
+    // ── Keyboard: Enter submits form ─────────────────────
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && document.activeElement !== document.querySelector('[type="submit"]')) {
+            var btn = document.getElementById('loginBtn');
+            if (!btn.disabled) document.getElementById('loginForm').requestSubmit();
         }
-        
-        const style = document.createElement('style');
-        style.textContent = 
-            '@keyframes slideIn {' +
-                'from { transform: translateX(100%); opacity: 0; }' +
-                'to { transform: translateX(0); opacity: 1; }' +
-            '}' +
-            '@keyframes slideOut {' +
-                'from { transform: translateX(0); opacity: 1; }' +
-                'to { transform: translateX(100%); opacity: 0; }' +
-            '}';
-        document.head.appendChild(style);
-    </script>
+    });
+</script>
 </body>
 </html>
