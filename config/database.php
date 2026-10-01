@@ -399,6 +399,13 @@ try {
             PDO::ATTR_EMULATE_PREPARES => false,
         ]);
 
+        // Enable WAL mode for reliable concurrent writes (fixes data-not-saving on Windows)
+        $pdo->exec('PRAGMA journal_mode=WAL;');
+        // Enforce foreign key constraints
+        $pdo->exec('PRAGMA foreign_keys=ON;');
+        // Reduce lock contention
+        $pdo->exec('PRAGMA busy_timeout=5000;');
+
         initializeSqliteDatabase($pdo);
     } elseif (in_array(strtolower($driver), ['pgsql', 'postgres', 'postgresql'])) {
         $dsnPort = !empty($port) ? $port : '5432';

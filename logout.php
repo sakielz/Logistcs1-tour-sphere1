@@ -19,6 +19,7 @@ if (ini_get("session.use_cookies")) {
     );
 }
 
-// Redirect to login
-header('Location: login.php');
-exit();
+// Redirect to login (preserve timeout flag if present)
+$suffix = (isset($_GET['timeout']) && $_GET['timeout'] === '1') ? '?timeout=1' : '';
+header('Location: login.php' . $suffix);
+exit();

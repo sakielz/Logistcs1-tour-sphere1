@@ -173,40 +173,50 @@ function getCurrentUser() {
 }
 
 /**
- * Check if user has permission
+ * Check if user has permission.
+ * NOTE: This is overridden by includes/auth.php when that file is loaded.
+ * Kept here as a safe fallback.
  */
-function hasPermission($module, $action = 'view') {
-    if (isAdmin()) {
-        return true;
+if (!function_exists('hasPermission')) {
+    function hasPermission($module, $action = 'view') {
+        if (isAdmin()) {
+            return true;
+        }
+
+        // Fallback permission map (auth.php ROLE_MODULE_PERMS is the authoritative one)
+        $rolePermissions = [
+            'warehouse_manager' => [
+                'warehouse'  => ['view', 'edit', 'create', 'delete'],
+                'inventory'  => ['view', 'edit', 'create'],
+                'stock'      => ['view', 'edit', 'create'],
+                'report'     => ['view'],
+            ],
+            'procurement_officer' => [
+                'supplier'       => ['view', 'edit', 'create'],
+                'purchase_order' => ['view', 'edit', 'create', 'approve'],
+                'requisition'    => ['view', 'edit', 'create', 'approve'],
+                'contract'       => ['view', 'edit', 'create'],
+                'shipment'       => ['view', 'edit', 'create'],
+                'document'       => ['view', 'edit', 'create'],
+                'report'         => ['view'],
+            ],
+            'inventory_clerk' => [
+                'inventory' => ['view', 'edit'],
+                'stock'     => ['view', 'edit'],
+                'report'    => ['view'],
+            ],
+            'employer' => [
+                'requisition' => ['view', 'create'],
+            ],
+        ];
+
+        $role = strtolower(trim($_SESSION['role'] ?? 'employer'));
+        if (isset($rolePermissions[$role][$module])) {
+            return in_array($action, $rolePermissions[$role][$module], true);
+        }
+
+        return false;
     }
-    
-    // Check user role permissions
-    $rolePermissions = [
-        'warehouse_manager' => [
-            'warehouse' => ['view', 'edit', 'create'],
-            'inventory' => ['view', 'edit', 'create'],
-            'stock' => ['view', 'edit', 'create']
-        ],
-        'procurement_officer' => [
-            'supplier' => ['view', 'edit', 'create'],
-            'purchase_order' => ['view', 'edit', 'create', 'approve'],
-            'requisition' => ['view', 'edit', 'create']
-        ],
-        'inventory_clerk' => [
-            'inventory' => ['view', 'edit'],
-            'stock' => ['view', 'edit']
-        ],
-        'employer' => [
-            'requisition' => ['view', 'create']
-        ]
-    ];
-    
-    $role = isset($_SESSION['role']) ? $_SESSION['role'] : 'employer';
-    if (isset($rolePermissions[$role]) && isset($rolePermissions[$role][$module])) {
-        return in_array($action, $rolePermissions[$role][$module]);
-    }
-    
-    return false;
 }
 
 // ============================================
@@ -271,22 +281,24 @@ function truncateText($text, $length = 100, $suffix = '...') {
 /**
  * Get the active UI theme.
  */
-function getTheme() {
-    global $pdo;
+if (!function_exists('getTheme')) {
+    function getTheme() {
+        global $pdo;
 
-    try {
-        if (!$pdo) {
+        try {
+            if (!$pdo) {
+                return 'light';
+            }
+
+            $stmt = $pdo->prepare("SELECT setting_value FROM system_settings WHERE setting_key = ?");
+            $stmt->execute(['theme']);
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            $theme = $result['setting_value'] ?? 'light';
+            return in_array($theme, ['light', 'dark'], true) ? $theme : 'light';
+        } catch (Throwable $e) {
             return 'light';
         }
-
-        $stmt = $pdo->prepare("SELECT setting_value FROM system_settings WHERE setting_key = ?");
-        $stmt->execute(['theme']);
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        $theme = $result['setting_value'] ?? 'light';
-        return in_array($theme, ['light', 'dark'], true) ? $theme : 'light';
-    } catch (Throwable $e) {
-        return 'light';
     }
 }
 

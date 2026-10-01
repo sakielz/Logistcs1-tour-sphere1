@@ -1,6 +1,7 @@
 <?php
 // admin/dashboard.php
 require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../includes/auth.php';
 
 // ============================================================
 // DASHBOARD ACCESS DEBUG MODE
@@ -24,18 +25,16 @@ if ($dashboardDebug) {
 
     if ($debug['is_logged_in'] !== 'TRUE') {
         $debug['access_result'] = 'NOT_LOGGED_IN';
-    } elseif ($debug['is_admin'] !== 'TRUE') {
-        $debug['access_result'] = 'LOGGED_IN_BUT_NOT_ADMIN';
     } else {
-        $debug['access_result'] = 'ADMIN_ACCESS_ALLOWED';
+        $debug['access_result'] = 'ACCESS_ALLOWED_ROLE_' . strtoupper($_SESSION['role'] ?? 'unknown');
     }
 
     // Show the dashboard normally in debug mode so we can see whether
     // the session and authorization actually survive the redirect.
-} elseif (!isLoggedIn() || !isAdmin()) {
-    header('Location: ../login.php');
-    exit();
+} else {
+    requireAuth();
 }
+
 // Define color constants if not already defined
 if (!defined('COLOR_PRIMARY')) define('COLOR_PRIMARY', '#2F80ED');
 if (!defined('COLOR_SECONDARY')) define('COLOR_SECONDARY', '#56CCF2');

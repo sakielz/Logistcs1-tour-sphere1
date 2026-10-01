@@ -36,8 +36,12 @@ try {
 // Get current page for active state
 $currentPage = basename($_SERVER['PHP_SELF']);
 ?>
+<!-- Session Inactivity Timeout (2 minutes) -->
+<script src="../assets/js/session-timeout.js" defer></script>
+
 <!-- Tailwind CSS (Scoped with Preflight disabled to preserve existing UI) -->
 <script src="https://cdn.tailwindcss.com"></script>
+
 <script>
     if (typeof tailwind !== 'undefined') {
         tailwind.config = {

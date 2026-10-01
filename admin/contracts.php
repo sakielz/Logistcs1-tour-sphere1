@@ -1,11 +1,9 @@
-<?php
+﻿<?php
 // admin/contracts.php
 require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../includes/auth.php';
 
-if (!isLoggedIn() || !isAdmin()) {
-    header('Location: ../login.php');
-    exit();
-}
+requireAuth(['admin','procurement_officer']);
 
 // Define color constants if not already defined
 if (!defined('COLOR_PRIMARY')) define('COLOR_PRIMARY', '#2F80ED');

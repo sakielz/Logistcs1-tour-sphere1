@@ -62,11 +62,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     session_regenerate_id(true);
                 }
 
-                $_SESSION['user_id'] = $user['id'];
-                $_SESSION['username'] = $user['username'];
-                $_SESSION['role'] = $user['role'];
-                $_SESSION['full_name'] = $user['full_name'];
-                $_SESSION['email'] = $user['email'];
+                $_SESSION['user_id']     = $user['id'];
+                $_SESSION['username']    = $user['username'];
+                $_SESSION['role']        = $user['role'];
+                $_SESSION['full_name']   = $user['full_name'];
+                $_SESSION['email']       = $user['email'];
+                $_SESSION['last_activity'] = time();  // seed inactivity timer
 
                 if (password_needs_rehash($user['password'], PASSWORD_DEFAULT)) {
                     $newHash = password_hash($password, PASSWORD_DEFAULT);
@@ -88,6 +89,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = 'Login error: ' . $e->getMessage();
         }
     }
+}
+?>
+<?php
+// Show session timeout notice
+if (isset($_GET['timeout']) && $_GET['timeout'] === '1') {
+    $timeoutMessage = 'Your session expired due to 2 minutes of inactivity. Please log in again.';
 }
 ?>
 <!DOCTYPE html>
@@ -447,6 +454,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <p>Logistics &amp; Data Coordination Portal</p>
             </div>
             
+            <?php if (isset($timeoutMessage)): ?>
+            <div class="error-message" style="background:#FEF3C7;color:#92400E;border-left-color:#D97706;">
+                <i class="fas fa-clock"></i>
+                <?php echo htmlspecialchars($timeoutMessage); ?>
+            </div>
+            <?php endif; ?>
+
             <?php if (isset($error)): ?>
             <div class="error-message">
                 <i class="fas fa-exclamation-circle"></i>
@@ -454,6 +468,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
             <?php endif; ?>
             
+
             <form method="POST" action="">
                 <div class="form-group">
                     <label><i class="fas fa-envelope" style="color: var(--primary);"></i> Email Address</label>

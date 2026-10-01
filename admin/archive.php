@@ -1,11 +1,9 @@
-<?php
+﻿<?php
 // admin/archive.php
 require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../includes/auth.php';
 
-if (!isLoggedIn() || !isAdmin()) {
-    header('Location: ../login.php');
-    exit();
-}
+requireAuth('admin');
 
 // ============================================
 // COLOR CONSTANTS
