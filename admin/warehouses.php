@@ -25,22 +25,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $warehouse_code = isset($_POST['warehouse_code']) ? trim($_POST['warehouse_code']) : '';
     $name = isset($_POST['name']) ? trim($_POST['name']) : '';
     $location = isset($_POST['location']) ? trim($_POST['location']) : '';
+    $groupName = trim((string)($_POST['group_name'] ?? ''));
     $capacity = isset($_POST['capacity']) ? (int)$_POST['capacity'] : 0;
     $type = isset($_POST['type']) ? $_POST['type'] : 'standard';
     
     $errors = [];
     if (empty($warehouse_code)) $errors[] = 'Warehouse code is required';
     if (empty($name)) $errors[] = 'Warehouse name is required';
+    if ($groupName === '') $errors[] = 'Group or department is required';
     
     if (empty($errors)) {
         try {
-            $stmt = $pdo->prepare("INSERT INTO warehouses (warehouse_code, name, location, capacity, type, status) VALUES (?, ?, ?, ?, ?, 'active')");
-            $stmt->execute([$warehouse_code, $name, $location, $capacity, $type]);
+            $pdo->beginTransaction();
+            $groupStmt = $pdo->prepare('SELECT id FROM inventory_groups WHERE LOWER(group_name) = LOWER(?)');
+            $groupStmt->execute([$groupName]);
+            $groupId = $groupStmt->fetchColumn();
+            if (!$groupId) {
+                $groupStmt = $pdo->prepare('INSERT INTO inventory_groups (group_name) VALUES (?)');
+                $groupStmt->execute([$groupName]);
+                $groupStmt = $pdo->prepare('SELECT id FROM inventory_groups WHERE LOWER(group_name) = LOWER(?)');
+                $groupStmt->execute([$groupName]);
+                $groupId = $groupStmt->fetchColumn();
+            }
+            $assignedStmt = $pdo->prepare('SELECT id FROM warehouses WHERE group_id = ? AND is_archived = 0 LIMIT 1');
+            $assignedStmt->execute([$groupId]);
+            if ($assignedStmt->fetchColumn()) throw new RuntimeException('This group already has a dedicated warehouse.');
+            $stmt = $pdo->prepare("INSERT INTO warehouses (warehouse_code, name, location, capacity, group_id, type, status) VALUES (?, ?, ?, ?, ?, ?, 'active')");
+            $stmt->execute([$warehouse_code, $name, $location, $capacity, $groupId, $type]);
+            $pdo->commit();
             logAudit($_SESSION['user_id'], 'create_warehouse', 'warehouse', "Created warehouse: $name");
             $_SESSION['success'] = "Warehouse created successfully!";
             header('Location: warehouses.php');
             exit();
         } catch (PDOException $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            $error = "Error creating warehouse: " . $e->getMessage();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
             $error = "Error creating warehouse: " . $e->getMessage();
         }
     } else {
@@ -54,18 +75,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'edit') {
     $warehouse_code = isset($_POST['warehouse_code']) ? trim($_POST['warehouse_code']) : '';
     $name = isset($_POST['name']) ? trim($_POST['name']) : '';
     $location = isset($_POST['location']) ? trim($_POST['location']) : '';
+    $groupName = trim((string)($_POST['group_name'] ?? ''));
     $capacity = isset($_POST['capacity']) ? (int)$_POST['capacity'] : 0;
     $type = isset($_POST['type']) ? $_POST['type'] : 'standard';
     $status = isset($_POST['status']) ? $_POST['status'] : 'active';
+
+    if ($status !== 'active') {
+        $stockCheck = $pdo->prepare("SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE warehouse_id = ?");
+        $stockCheck->execute([$id]);
+        if ((int)$stockCheck->fetchColumn() > 0) {
+            $_SESSION['error'] = 'Move all stock out of this warehouse before marking it inactive or under maintenance.';
+            header('Location: warehouses.php');
+            exit();
+        }
+    }
     
     try {
-        $stmt = $pdo->prepare("UPDATE warehouses SET warehouse_code = ?, name = ?, location = ?, capacity = ?, type = ?, status = ? WHERE id = ?");
-        $stmt->execute([$warehouse_code, $name, $location, $capacity, $type, $status, $id]);
+        if ($groupName === '') throw new RuntimeException('Group or department is required.');
+        $pdo->beginTransaction();
+        $groupStmt = $pdo->prepare('SELECT id FROM inventory_groups WHERE LOWER(group_name) = LOWER(?)');
+        $groupStmt->execute([$groupName]);
+        $groupId = $groupStmt->fetchColumn();
+        if (!$groupId) {
+            $groupStmt = $pdo->prepare('INSERT INTO inventory_groups (group_name) VALUES (?)');
+            $groupStmt->execute([$groupName]);
+            $groupStmt = $pdo->prepare('SELECT id FROM inventory_groups WHERE LOWER(group_name) = LOWER(?)');
+            $groupStmt->execute([$groupName]);
+            $groupId = $groupStmt->fetchColumn();
+        }
+        $assignedStmt = $pdo->prepare('SELECT id FROM warehouses WHERE group_id = ? AND id <> ? AND is_archived = 0 LIMIT 1');
+        $assignedStmt->execute([$groupId, $id]);
+        if ($assignedStmt->fetchColumn()) throw new RuntimeException('This group already has a dedicated warehouse.');
+        $stmt = $pdo->prepare("UPDATE warehouses SET warehouse_code = ?, name = ?, location = ?, capacity = ?, group_id = ?, type = ?, status = ? WHERE id = ?");
+        $stmt->execute([$warehouse_code, $name, $location, $capacity, $groupId, $type, $status, $id]);
+        $pdo->commit();
         logAudit($_SESSION['user_id'], 'update_warehouse', 'warehouse', "Updated warehouse: $name");
         $_SESSION['success'] = "Warehouse updated successfully!";
         header('Location: warehouses.php');
         exit();
     } catch (PDOException $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $error = "Error updating warehouse: " . $e->getMessage();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
         $error = "Error updating warehouse: " . $e->getMessage();
     }
 }
@@ -73,9 +125,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'edit') {
 // Archive Warehouse
 if ($action === 'archive' && isset($_GET['id'])) {
     $id = (int)$_GET['id'];
-    archiveRecord('warehouses', $id);
-    logAudit($_SESSION['user_id'], 'archive_warehouse', 'warehouse', "Archived warehouse ID: $id");
-    $_SESSION['success'] = "Warehouse archived successfully!";
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE warehouse_id = ?");
+    $stmt->execute([$id]);
+    if ((int)$stmt->fetchColumn() > 0) {
+        $_SESSION['error'] = 'Move all stock out of this warehouse before archiving it.';
+    } else {
+        archiveRecord('warehouses', $id);
+        logAudit($_SESSION['user_id'], 'archive_warehouse', 'warehouse', "Archived warehouse ID: $id");
+        $_SESSION['success'] = "Warehouse archived successfully!";
+    }
     header('Location: warehouses.php');
     exit();
 }
@@ -94,11 +152,16 @@ if ($action === 'restore' && isset($_GET['id'])) {
 if ($action === 'delete' && isset($_GET['id'])) {
     $id = (int)$_GET['id'];
     try {
+        $stmt = $pdo->prepare("SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE warehouse_id = ?");
+        $stmt->execute([$id]);
+        if ((int)$stmt->fetchColumn() > 0) {
+            throw new RuntimeException('Move all stock out of this warehouse before deleting it.');
+        }
         $stmt = $pdo->prepare("DELETE FROM warehouses WHERE id = ?");
         $stmt->execute([$id]);
         logAudit($_SESSION['user_id'], 'delete_warehouse', 'warehouse', "Permanently deleted warehouse ID: $id");
         $_SESSION['success'] = "Warehouse permanently deleted!";
-    } catch (PDOException $e) {
+    } catch (Throwable $e) {
         $_SESSION['error'] = "Error deleting warehouse: " . $e->getMessage();
     }
     header('Location: warehouses.php?archived=1');
@@ -108,7 +171,13 @@ if ($action === 'delete' && isset($_GET['id'])) {
 // Get warehouses
 $showArchived = isset($_GET['archived']) ? 1 : 0;
 try {
-    $stmt = $pdo->prepare("SELECT * FROM warehouses WHERE is_archived = ? ORDER BY created_at DESC");
+    $stmt = $pdo->prepare("SELECT w.*, g.group_name, COUNT(DISTINCT wi.product_id) AS stocked_products, COALESCE(SUM(wi.quantity), 0) AS stored_units
+                           FROM warehouses w
+                           LEFT JOIN inventory_groups g ON g.id = w.group_id
+                           LEFT JOIN warehouse_inventory wi ON wi.warehouse_id = w.id
+                           WHERE w.is_archived = ?
+                           GROUP BY w.id
+                           ORDER BY w.created_at DESC");
     $stmt->execute([$showArchived]);
     $warehouses = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
@@ -120,7 +189,7 @@ try {
 $editWarehouse = null;
 if ($action === 'edit' && isset($_GET['id'])) {
     try {
-        $stmt = $pdo->prepare("SELECT * FROM warehouses WHERE id = ?");
+        $stmt = $pdo->prepare("SELECT w.*, g.group_name FROM warehouses w LEFT JOIN inventory_groups g ON g.id = w.group_id WHERE w.id = ?");
         $stmt->execute([$_GET['id']]);
         $editWarehouse = $stmt->fetch(PDO::FETCH_ASSOC);
     } catch (PDOException $e) {
@@ -600,8 +669,11 @@ try {
                             <tr>
                                 <th>Warehouse Code</th>
                                 <th>Name</th>
+                                <th>Group</th>
                                 <th>Location</th>
                                 <th>Capacity</th>
+                                <th>Products</th>
+                                <th>Units Stored</th>
                                 <th>Type</th>
                                 <th>Status</th>
                                 <th>Actions</th>
@@ -613,8 +685,11 @@ try {
                                 <tr>
                                     <td><strong><?php echo htmlspecialchars($warehouse['warehouse_code']); ?></strong></td>
                                     <td><?php echo htmlspecialchars($warehouse['name']); ?></td>
+                                    <td><?php echo htmlspecialchars($warehouse['group_name'] ?? 'Unassigned'); ?></td>
                                     <td><?php echo htmlspecialchars($warehouse['location'] ?? 'N/A'); ?></td>
                                     <td><?php echo number_format($warehouse['capacity']); ?></td>
+                                    <td><?php echo number_format($warehouse['stocked_products']); ?></td>
+                                    <td><?php echo number_format($warehouse['stored_units']); ?></td>
                                     <td>
                                         <span class="warehouse-type-badge <?php echo $warehouse['type']; ?>">
                                             <?php echo ucfirst(str_replace('_', ' ', $warehouse['type'])); ?>
@@ -631,6 +706,10 @@ try {
                                     <td>
                                         <div class="action-buttons">
                                             <?php if (!$showArchived): ?>
+                                                <a href="inventory.php?warehouse_id=<?php echo (int)$warehouse['id']; ?>"
+                                                   class="btn btn-primary btn-sm" title="View Warehouse Inventory">
+                                                    <i class="fas fa-boxes-stacked"></i>
+                                                </a>
                                                 <a href="warehouse-zones.php?warehouse_id=<?php echo $warehouse['id']; ?>" 
                                                    class="btn btn-success btn-sm" title="View Zones">
                                                     <i class="fas fa-layer-group"></i>
@@ -662,7 +741,7 @@ try {
                                 <?php endforeach; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="7" class="empty-state">
+                                    <td colspan="10" class="empty-state">
                                         <i class="fas fa-warehouse"></i>
                                         <p>No warehouses found</p>
                                     </td>
@@ -701,6 +780,13 @@ try {
                     <input type="text" name="name" required 
                            value="<?php echo isset($editWarehouse['name']) ? htmlspecialchars($editWarehouse['name']) : ''; ?>"
                            placeholder="e.g., Main Distribution Center">
+                </div>
+
+                <div class="form-group">
+                    <label>Group / Department *</label>
+                    <input type="text" name="group_name" required maxlength="150"
+                           value="<?php echo isset($editWarehouse['group_name']) ? htmlspecialchars($editWarehouse['group_name']) : htmlspecialchars($groupName ?? ''); ?>"
+                           placeholder="e.g., Tours, Maintenance, Administration">
                 </div>
                 
                 <div class="form-group">

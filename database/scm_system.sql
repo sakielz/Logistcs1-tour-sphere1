@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS `suppliers` (
     `id` INT PRIMARY KEY AUTO_INCREMENT,
     `supplier_code` VARCHAR(50) UNIQUE NOT NULL,
     `company_name` VARCHAR(255) NOT NULL,
+    `supplier_type` VARCHAR(100) NOT NULL DEFAULT 'general',
     `contact_person` VARCHAR(255),
     `email` VARCHAR(255),
     `phone` VARCHAR(50),
@@ -85,6 +86,17 @@ CREATE TABLE IF NOT EXISTS `suppliers` (
     INDEX `idx_archived` (`is_archived`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS `supplier_privacy_acknowledgements` (
+    `id` INT PRIMARY KEY AUTO_INCREMENT,
+    `supplier_id` INT NOT NULL,
+    `acknowledged_by` VARCHAR(255) NOT NULL,
+    `acknowledgement_text` TEXT NOT NULL,
+    `policy_version` VARCHAR(50) NOT NULL,
+    `recorded_by` INT NULL,
+    `acknowledged_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_supplier_privacy_supplier` (`supplier_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `supplier_performance` (
     `id` INT PRIMARY KEY AUTO_INCREMENT,
     `supplier_id` INT NOT NULL,
@@ -102,6 +114,12 @@ CREATE TABLE IF NOT EXISTS `supplier_performance` (
 -- 4. Warehouses
 -- ============================================
 
+CREATE TABLE IF NOT EXISTS `inventory_groups` (
+    `id` INT PRIMARY KEY AUTO_INCREMENT,
+    `group_name` VARCHAR(150) NOT NULL UNIQUE,
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `warehouses` (
     `id` INT PRIMARY KEY AUTO_INCREMENT,
     `warehouse_code` VARCHAR(50) UNIQUE NOT NULL,
@@ -109,6 +127,7 @@ CREATE TABLE IF NOT EXISTS `warehouses` (
     `location` VARCHAR(255),
     `capacity` INT DEFAULT 0,
     `current_utilization` INT DEFAULT 0,
+    `group_id` INT NULL,
     `type` ENUM('standard', 'cold_chain', 'hazmat') DEFAULT 'standard',
     `status` ENUM('active', 'maintenance', 'inactive') DEFAULT 'active',
     `is_archived` BOOLEAN DEFAULT FALSE,
@@ -144,7 +163,9 @@ CREATE TABLE IF NOT EXISTS `products` (
     `sku` VARCHAR(100) UNIQUE NOT NULL,
     `product_name` VARCHAR(255) NOT NULL,
     `description` TEXT,
+    `brand` VARCHAR(150),
     `category` VARCHAR(100),
+    `item_type` VARCHAR(100) NOT NULL DEFAULT 'general',
     `unit_measure` VARCHAR(20),
     `unit_price` DECIMAL(12,2) DEFAULT 0.00,
     `reorder_point` INT DEFAULT 0,
@@ -166,6 +187,18 @@ CREATE TABLE IF NOT EXISTS `products` (
     INDEX `idx_category` (`category`),
     INDEX `idx_status` (`status`),
     INDEX `idx_archived` (`is_archived`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `warehouse_inventory` (
+    `id` INT PRIMARY KEY AUTO_INCREMENT,
+    `product_id` INT NOT NULL,
+    `warehouse_id` INT NOT NULL,
+    `quantity` INT NOT NULL DEFAULT 0,
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `unique_product_warehouse` (`product_id`, `warehouse_id`),
+    FOREIGN KEY (`product_id`) REFERENCES `products`(`id`) ON DELETE CASCADE,
+    FOREIGN KEY (`warehouse_id`) REFERENCES `warehouses`(`id`) ON DELETE CASCADE,
+    INDEX `idx_warehouse_inventory_warehouse` (`warehouse_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `product_serial_numbers` (
@@ -203,6 +236,28 @@ CREATE TABLE IF NOT EXISTS `inventory_transactions` (
     INDEX `idx_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS `inventory_incidents` (
+    `id` INT PRIMARY KEY AUTO_INCREMENT,
+    `incident_number` VARCHAR(100) UNIQUE NOT NULL,
+    `product_id` INT NOT NULL,
+    `warehouse_id` INT NOT NULL,
+    `quantity` INT NOT NULL,
+    `issue_type` VARCHAR(40) NOT NULL,
+    `description` TEXT,
+    `status` VARCHAR(20) NOT NULL DEFAULT 'reported',
+    `resolution` VARCHAR(40),
+    `created_by` INT,
+    `resolved_by` INT,
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `resolved_at` DATETIME,
+    FOREIGN KEY (`product_id`) REFERENCES `products`(`id`),
+    FOREIGN KEY (`warehouse_id`) REFERENCES `warehouses`(`id`),
+    FOREIGN KEY (`created_by`) REFERENCES `users`(`id`) ON DELETE SET NULL,
+    FOREIGN KEY (`resolved_by`) REFERENCES `users`(`id`) ON DELETE SET NULL,
+    INDEX `idx_incident_status` (`status`),
+    INDEX `idx_incident_product` (`product_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ============================================
 -- 6. Purchase Orders & Requisitions
 -- ============================================
@@ -215,6 +270,7 @@ CREATE TABLE IF NOT EXISTS `purchase_requisitions` (
     `requested_by` INT,
     `department` VARCHAR(100),
     `required_date` DATE,
+    `payment_method` VARCHAR(30) NULL,
     `priority` ENUM('low', 'medium', 'high', 'urgent') DEFAULT 'medium',
     `estimated_total` DECIMAL(15,2) DEFAULT 0.00,
     `status` ENUM('draft', 'pending_review', 'approved', 'rejected', 'revision_requested', 'converted_to_po') DEFAULT 'draft',
@@ -246,11 +302,13 @@ CREATE TABLE IF NOT EXISTS `purchase_orders` (
     `id` INT PRIMARY KEY AUTO_INCREMENT,
     `po_number` VARCHAR(50) UNIQUE NOT NULL,
     `supplier_id` INT,
+    `warehouse_id` INT,
     `order_date` DATE,
     `expected_delivery` DATE,
     `actual_delivery` DATE,
     `total_amount` DECIMAL(15,2) DEFAULT 0.00,
     `currency` VARCHAR(10) DEFAULT 'PHP',
+    `payment_method` VARCHAR(30) NULL,
     `status` ENUM('draft', 'pending', 'approved', 'rejected', 'shipped', 'received', 'completed', 'cancelled') DEFAULT 'draft',
     `approval_status` ENUM('pending_review', 'approved', 'rejected', 'revision_requested') DEFAULT 'pending_review',
     `approval_notes` TEXT,
@@ -264,6 +322,7 @@ CREATE TABLE IF NOT EXISTS `purchase_orders` (
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (`supplier_id`) REFERENCES `suppliers`(`id`) ON DELETE SET NULL,
+    FOREIGN KEY (`warehouse_id`) REFERENCES `warehouses`(`id`) ON DELETE SET NULL,
     FOREIGN KEY (`created_by`) REFERENCES `users`(`id`) ON DELETE SET NULL,
     FOREIGN KEY (`approved_by`) REFERENCES `users`(`id`) ON DELETE SET NULL,
     INDEX `idx_po_number` (`po_number`),
@@ -277,13 +336,36 @@ CREATE TABLE IF NOT EXISTS `purchase_order_items` (
     `po_id` INT NOT NULL,
     `product_id` INT NOT NULL,
     `quantity` INT NOT NULL,
-    `received_quantity` INT DEFAULT 0,
+    `received_quantity` INT NOT NULL DEFAULT 0,
     `unit_price` DECIMAL(12,2),
     `total_price` DECIMAL(15,2),
     `expected_date` DATE,
     FOREIGN KEY (`po_id`) REFERENCES `purchase_orders`(`id`) ON DELETE CASCADE,
     FOREIGN KEY (`product_id`) REFERENCES `products`(`id`),
     INDEX `idx_po_id` (`po_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `inventory_batches` (
+    `id` INT PRIMARY KEY AUTO_INCREMENT,
+    `receipt_number` VARCHAR(100) NOT NULL,
+    `po_id` INT NOT NULL,
+    `po_item_id` INT NOT NULL,
+    `origin_batch_id` INT NULL,
+    `product_id` INT NOT NULL,
+    `supplier_id` INT NULL,
+    `warehouse_id` INT NOT NULL,
+    `batch_number` VARCHAR(100) NOT NULL,
+    `received_quantity` INT NOT NULL,
+    `available_quantity` INT NOT NULL DEFAULT 0,
+    `expiry_date` DATE NULL,
+    `brand_snapshot` VARCHAR(150) NULL,
+    `quality_status` ENUM('accepted', 'rejected') NOT NULL DEFAULT 'rejected',
+    `quality_notes` TEXT,
+    `received_by` INT NULL,
+    `received_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_inventory_batch_product_warehouse` (`product_id`, `warehouse_id`),
+    INDEX `idx_inventory_batch_expiry` (`expiry_date`),
+    INDEX `idx_inventory_batch_receipt` (`receipt_number`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================
@@ -352,7 +434,7 @@ CREATE TABLE IF NOT EXISTS `shipments` (
 CREATE TABLE IF NOT EXISTS `documents` (
     `id` INT PRIMARY KEY AUTO_INCREMENT,
     `document_number` VARCHAR(100) UNIQUE NOT NULL,
-    `document_type` ENUM('bol', 'packing_list', 'invoice', 'customs', 'certificate', 'contract') NOT NULL,
+    `document_type` ENUM('bol', 'packing_list', 'invoice', 'customs', 'certificate', 'contract', 'report') NOT NULL,
     `title` VARCHAR(255) NOT NULL,
     `description` TEXT,
     `file_path` VARCHAR(500),

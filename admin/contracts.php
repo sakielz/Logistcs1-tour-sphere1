@@ -35,6 +35,9 @@ try {
 // ============================================
 if ($action === 'export' && isset($_GET['format'])) {
     $format = $_GET['format'];
+    $statusFilter = isset($_GET['status']) ? $_GET['status'] : '';
+    $supplierFilter = isset($_GET['supplier']) ? trim($_GET['supplier']) : '';
+    $search = isset($_GET['search']) ? trim($_GET['search']) : '';
     
     try {
         $query = "SELECT c.*, s.company_name, u.full_name as created_by_name 
@@ -65,6 +68,9 @@ if ($action === 'export' && isset($_GET['format'])) {
         $stmt = $pdo->prepare($query);
         $stmt->execute($params);
         $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        require_once __DIR__ . '/../includes/report_export.php';
+        exportTrackedReport($pdo, (int)$_SESSION['user_id'], 'contracts', 'Procurement Contracts', $format, $data);
         
         if ($format === 'csv') {
             header('Content-Type: text/csv');
@@ -1066,8 +1072,8 @@ $paginatedContracts = array_slice($contracts, $offset, $itemsPerPage);
                             <i class="fas fa-download"></i> Export
                         </button>
                         <div class="dropdown-content" id="exportDropdown">
-                            <a href="contracts.php?action=export&format=csv<?php echo '&status=' . $statusFilter . '&search=' . urlencode($search); ?>">
-                                <i class="fas fa-file-csv"></i> Export CSV
+                            <a href="contracts.php?action=export&format=excel<?php echo '&status=' . $statusFilter . '&search=' . urlencode($search); ?>">
+                                <i class="fas fa-file-excel"></i> Export Excel
                             </a>
                             <a href="contracts.php?action=export&format=pdf<?php echo '&status=' . $statusFilter . '&search=' . urlencode($search); ?>">
                                 <i class="fas fa-file-pdf"></i> Export PDF

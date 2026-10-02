@@ -47,7 +47,8 @@ $documentTypes = [
     'invoice' => 'Invoice',
     'customs' => 'Customs Document',
     'certificate' => 'Certificate',
-    'contract' => 'Contract'
+    'contract' => 'Contract',
+    'report' => 'Generated Report'
 ];
 
 // ============================================
@@ -156,8 +157,8 @@ if ($action === 'bulk_status' && isset($_POST['ids']) && isset($_POST['status'])
 if ($action === 'export') {
     $format = isset($_GET['format']) ? strtolower(trim((string)$_GET['format'])) : '';
 
-    if (!in_array($format, ['csv', 'pdf'], true)) {
-        $_SESSION['error'] = 'Invalid export format.';
+    if (!in_array($format, ['excel', 'pdf'], true)) {
+        $_SESSION['error'] = 'Choose PDF or Excel for document register exports.';
         header('Location: documents.php');
         exit();
     }
@@ -209,6 +210,9 @@ if ($action === 'export') {
         $stmt = $pdo->prepare($query);
         $stmt->execute($params);
         $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        require_once __DIR__ . '/../includes/report_export.php';
+        exportTrackedReport($pdo, (int)$_SESSION['user_id'], 'documents', 'Document Tracking Register', $format, $data);
 
         // Discard anything emitted by included files before sending download headers.
         while (ob_get_level() > 0) {
@@ -462,7 +466,7 @@ try {
 }
 
 // Get modules for filter
-$modules = ['shipments' => 'Shipments', 'purchase_orders' => 'Purchase Orders', 'suppliers' => 'Suppliers', 'products' => 'Products', 'requisitions' => 'Requisitions'];
+$modules = ['shipments' => 'Shipments', 'purchase_orders' => 'Purchase Orders', 'suppliers' => 'Suppliers', 'products' => 'Products', 'requisitions' => 'Requisitions', 'stock_movements' => 'Stock Movements', 'inventory_incidents' => 'Inventory Incidents', 'reports' => 'Reports'];
 
 // Pagination
 $itemsPerPage = isset($_GET['per_page']) ? (int)$_GET['per_page'] : 10;
@@ -1864,8 +1868,8 @@ try {
                             <i class="fas fa-download"></i> Export
                         </button>
                         <div class="dropdown-content" id="exportDropdown">
-                            <a class="export-link" href="documents.php?action=export&amp;format=csv&amp;type=<?php echo urlencode($typeFilter); ?>&amp;module=<?php echo urlencode($moduleFilter); ?>&amp;status=<?php echo urlencode($statusFilter); ?>&amp;date_from=<?php echo urlencode($dateFrom); ?>&amp;date_to=<?php echo urlencode($dateTo); ?>&amp;search=<?php echo urlencode($search); ?>">
-                                <i class="fas fa-file-csv"></i> Export CSV
+                            <a class="export-link" href="documents.php?action=export&amp;format=excel&amp;type=<?php echo urlencode($typeFilter); ?>&amp;module=<?php echo urlencode($moduleFilter); ?>&amp;status=<?php echo urlencode($statusFilter); ?>&amp;date_from=<?php echo urlencode($dateFrom); ?>&amp;date_to=<?php echo urlencode($dateTo); ?>&amp;search=<?php echo urlencode($search); ?>">
+                                <i class="fas fa-file-excel"></i> Export Excel
                             </a>
                             <a class="export-link" href="documents.php?action=export&amp;format=pdf&amp;type=<?php echo urlencode($typeFilter); ?>&amp;module=<?php echo urlencode($moduleFilter); ?>&amp;status=<?php echo urlencode($statusFilter); ?>&amp;date_from=<?php echo urlencode($dateFrom); ?>&amp;date_to=<?php echo urlencode($dateTo); ?>&amp;search=<?php echo urlencode($search); ?>">
                                 <i class="fas fa-file-pdf"></i> Export PDF

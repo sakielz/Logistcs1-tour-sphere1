@@ -45,6 +45,8 @@ try {
 // ============================================
 if ($action === 'export' && isset($_GET['format'])) {
     $format = $_GET['format'];
+    $statusFilter = isset($_GET['status']) ? trim($_GET['status']) : '';
+    $search = isset($_GET['search']) ? trim($_GET['search']) : '';
     
     try {
         $query = "SELECT pr.*, u.full_name as requester_name, u2.full_name as creator_name 
@@ -71,6 +73,9 @@ if ($action === 'export' && isset($_GET['format'])) {
         $stmt = $pdo->prepare($query);
         $stmt->execute($params);
         $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        require_once __DIR__ . '/../includes/report_export.php';
+        exportTrackedReport($pdo, (int)$_SESSION['user_id'], 'requisitions', 'Purchase Requisitions', $format, $data);
         
         if ($format === 'csv') {
             header('Content-Type: text/csv');
@@ -150,9 +155,9 @@ if ($action === 'bulk_approve' && isset($_POST['ids'])) {
                 if ($pr) {
                     $po_number = 'PO-' . date('Ymd') . '-' . str_pad(mt_rand(1, 999), 3, '0', STR_PAD_LEFT);
                     
-                    $stmt2 = $pdo->prepare("INSERT INTO purchase_orders (po_number, order_date, expected_delivery, status, approval_status, created_by) 
-                                            VALUES (?, datetime('now'), datetime('now', '+14 days'), 'approved', 'approved', ?)");
-                    $stmt2->execute([$po_number, $_SESSION['user_id']]);
+                    $stmt2 = $pdo->prepare("INSERT INTO purchase_orders (po_number, payment_method, order_date, expected_delivery, status, approval_status, created_by)
+                                            VALUES (?, ?, datetime('now'), datetime('now', '+14 days'), 'approved', 'approved', ?)");
+                    $stmt2->execute([$po_number, $pr['payment_method'] ?? null, $_SESSION['user_id']]);
                     $po_id = $pdo->lastInsertId();
                     
                     // Copy items
@@ -198,12 +203,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $requested_by = isset($_POST['requested_by']) ? (int)$_POST['requested_by'] : 0;
     $department = isset($_POST['department']) ? trim($_POST['department']) : '';
     $required_date = isset($_POST['required_date']) ? $_POST['required_date'] : '';
+    $payment_method = trim((string)($_POST['payment_method'] ?? ''));
     $priority = isset($_POST['priority']) ? $_POST['priority'] : 'medium';
     $notes = isset($_POST['notes']) ? trim($_POST['notes']) : '';
     
     $errors = [];
     if (empty($title)) $errors[] = 'Title is required';
     if (empty($requested_by)) $errors[] = 'Requester is required';
+    if (!in_array($payment_method, ['cash', 'digital_cash', 'credit'], true)) $errors[] = 'Choose a payment method.';
     
     // Generate PR number
     $pr_number = 'PR-' . date('Ymd') . '-' . str_pad(mt_rand(1, 999), 3, '0', STR_PAD_LEFT);
@@ -212,8 +219,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
         try {
             $pdo->beginTransaction();
             
-            $stmt = $pdo->prepare("INSERT INTO purchase_requisitions (pr_number, title, description, requested_by, department, required_date, priority, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_review', ?)");
-            $stmt->execute([$pr_number, $title, $description, $requested_by, $department, $required_date, $priority, $_SESSION['user_id']]);
+            $stmt = $pdo->prepare("INSERT INTO purchase_requisitions (pr_number, title, description, requested_by, department, required_date, payment_method, priority, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?)");
+            $stmt->execute([$pr_number, $title, $description, $requested_by, $department, $required_date, $payment_method, $priority, $_SESSION['user_id']]);
             $pr_id = $pdo->lastInsertId();
             
             // Add items
@@ -240,7 +247,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
             
             $pdo->commit();
             
-            logAudit($_SESSION['user_id'], 'create_requisition', 'procurement', "Created requisition: $pr_number");
+            logAudit($_SESSION['user_id'], 'create_requisition', 'procurement', "Created requisition: $pr_number using payment method: $payment_method");
             $_SESSION['success'] = "Requisition $pr_number created successfully!";
             header('Location: requisitions.php');
             exit();
@@ -276,9 +283,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'update_status') {
             if ($pr) {
                 $po_number = 'PO-' . date('Ymd') . '-' . str_pad(mt_rand(1, 999), 3, '0', STR_PAD_LEFT);
                 
-                $stmt2 = $pdo->prepare("INSERT INTO purchase_orders (po_number, order_date, expected_delivery, status, approval_status, created_by) 
-                                        VALUES (?, datetime('now'), datetime('now', '+14 days'), 'approved', 'approved', ?)");
-                $stmt2->execute([$po_number, $_SESSION['user_id']]);
+                $stmt2 = $pdo->prepare("INSERT INTO purchase_orders (po_number, payment_method, order_date, expected_delivery, status, approval_status, created_by)
+                                        VALUES (?, ?, datetime('now'), datetime('now', '+14 days'), 'approved', 'approved', ?)");
+                $stmt2->execute([$po_number, $pr['payment_method'] ?? null, $_SESSION['user_id']]);
                 $po_id = $pdo->lastInsertId();
                 
                 // Copy items
@@ -383,9 +390,9 @@ if ($action === 'convert_to_po' && isset($_GET['id'])) {
         if ($pr) {
             $po_number = 'PO-' . date('Ymd') . '-' . str_pad(mt_rand(1, 999), 3, '0', STR_PAD_LEFT);
             
-            $stmt2 = $pdo->prepare("INSERT INTO purchase_orders (po_number, order_date, expected_delivery, status, approval_status, created_by) 
-                                    VALUES (?, datetime('now'), datetime('now', '+14 days'), 'approved', 'approved', ?)");
-            $stmt2->execute([$po_number, $_SESSION['user_id']]);
+            $stmt2 = $pdo->prepare("INSERT INTO purchase_orders (po_number, payment_method, order_date, expected_delivery, status, approval_status, created_by)
+                                    VALUES (?, ?, datetime('now'), datetime('now', '+14 days'), 'approved', 'approved', ?)");
+            $stmt2->execute([$po_number, $pr['payment_method'] ?? null, $_SESSION['user_id']]);
             $po_id = $pdo->lastInsertId();
             
             // Copy items
@@ -1182,8 +1189,8 @@ try {
                             <i class="fas fa-download"></i> Export
                         </button>
                         <div class="dropdown-content" id="exportDropdown">
-                            <a href="requisitions.php?action=export&format=csv<?php echo '&status=' . $statusFilter . '&search=' . urlencode($search); ?>">
-                                <i class="fas fa-file-csv"></i> Export CSV
+                            <a href="requisitions.php?action=export&format=excel<?php echo '&status=' . $statusFilter . '&search=' . urlencode($search); ?>">
+                                <i class="fas fa-file-excel"></i> Export Excel
                             </a>
                             <a href="requisitions.php?action=export&format=pdf<?php echo '&status=' . $statusFilter . '&search=' . urlencode($search); ?>">
                                 <i class="fas fa-file-pdf"></i> Export PDF
@@ -1624,6 +1631,16 @@ try {
                             <option value="urgent">Urgent</option>
                         </select>
                     </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Payment Method *</label>
+                    <select name="payment_method" required>
+                        <option value="">Choose a payment method</option>
+                        <option value="cash">Cash</option>
+                        <option value="digital_cash">Digital Cash</option>
+                        <option value="credit">Credits</option>
+                    </select>
                 </div>
                 
                 <h4 style="margin: 15px 0 10px;">Items</h4>

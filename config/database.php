@@ -123,6 +123,7 @@ if (!function_exists('initializeSqliteDatabase')) {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             supplier_code TEXT UNIQUE,
             company_name TEXT,
+            supplier_type TEXT NOT NULL DEFAULT 'general',
             contact_person TEXT,
             email TEXT,
             phone TEXT,
@@ -138,12 +139,30 @@ if (!function_exists('initializeSqliteDatabase')) {
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         );");
 
+        $pdo->exec("CREATE TABLE IF NOT EXISTS supplier_privacy_acknowledgements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            supplier_id INTEGER NOT NULL,
+            acknowledged_by TEXT NOT NULL,
+            acknowledgement_text TEXT NOT NULL,
+            policy_version TEXT NOT NULL,
+            recorded_by INTEGER,
+            acknowledged_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS inventory_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_name TEXT NOT NULL UNIQUE,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );");
+
         $pdo->exec("CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sku TEXT UNIQUE,
             product_name TEXT,
             description TEXT,
+            brand TEXT,
             category TEXT,
+            item_type TEXT NOT NULL DEFAULT 'general',
             unit_measure TEXT,
             unit_price REAL DEFAULT 0,
             reorder_point INTEGER DEFAULT 0,
@@ -165,9 +184,11 @@ if (!function_exists('initializeSqliteDatabase')) {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             po_number TEXT,
             supplier_id INTEGER,
+            warehouse_id INTEGER,
             order_date TEXT,
             expected_delivery TEXT,
             shipping_address TEXT,
+            payment_method TEXT,
             terms TEXT,
             notes TEXT,
             status TEXT DEFAULT 'pending',
@@ -184,10 +205,31 @@ if (!function_exists('initializeSqliteDatabase')) {
             po_id INTEGER,
             product_id INTEGER,
             quantity INTEGER,
+            received_quantity INTEGER DEFAULT 0,
             unit_price REAL,
             total_price REAL,
             expected_date TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS inventory_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            receipt_number TEXT NOT NULL,
+            po_id INTEGER NOT NULL,
+            po_item_id INTEGER NOT NULL,
+            origin_batch_id INTEGER,
+            product_id INTEGER NOT NULL,
+            supplier_id INTEGER,
+            warehouse_id INTEGER NOT NULL,
+            batch_number TEXT NOT NULL,
+            received_quantity INTEGER NOT NULL,
+            available_quantity INTEGER NOT NULL DEFAULT 0,
+            expiry_date TEXT,
+            brand_snapshot TEXT,
+            quality_status TEXT NOT NULL DEFAULT 'rejected',
+            quality_notes TEXT,
+            received_by INTEGER,
+            received_at TEXT DEFAULT CURRENT_TIMESTAMP
         );");
 
         $pdo->exec("CREATE TABLE IF NOT EXISTS warehouses (
@@ -197,11 +239,23 @@ if (!function_exists('initializeSqliteDatabase')) {
             location TEXT,
             capacity INTEGER DEFAULT 0,
             current_utilization INTEGER DEFAULT 0,
+            group_id INTEGER,
             type TEXT DEFAULT 'standard',
             status TEXT DEFAULT 'active',
             is_archived INTEGER DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS warehouse_inventory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL,
+            warehouse_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(product_id, warehouse_id),
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+            FOREIGN KEY (warehouse_id) REFERENCES warehouses(id) ON DELETE CASCADE
         );");
 
         $pdo->exec("CREATE TABLE IF NOT EXISTS warehouse_zones (
@@ -245,6 +299,24 @@ if (!function_exists('initializeSqliteDatabase')) {
             FOREIGN KEY (product_id) REFERENCES products(id)
         );");
 
+        $pdo->exec("CREATE TABLE IF NOT EXISTS inventory_incidents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            incident_number TEXT UNIQUE NOT NULL,
+            product_id INTEGER NOT NULL,
+            warehouse_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL,
+            issue_type TEXT NOT NULL,
+            description TEXT,
+            status TEXT NOT NULL DEFAULT 'reported',
+            resolution TEXT,
+            created_by INTEGER,
+            resolved_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TEXT,
+            FOREIGN KEY (product_id) REFERENCES products(id),
+            FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+        );");
+
         $pdo->exec("CREATE TABLE IF NOT EXISTS purchase_requisitions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             pr_number TEXT UNIQUE NOT NULL,
@@ -253,6 +325,7 @@ if (!function_exists('initializeSqliteDatabase')) {
             requested_by INTEGER,
             department TEXT,
             required_date TEXT,
+            payment_method TEXT,
             priority TEXT DEFAULT 'medium',
             estimated_total REAL DEFAULT 0.00,
             status TEXT DEFAULT 'draft',
@@ -442,6 +515,275 @@ try {
             $pdo = null;
         }
     }
+}
+
+if ($pdo instanceof PDO) {
+    $databaseDriver = strtolower($pdo->getAttribute(PDO::ATTR_DRIVER_NAME));
+
+    foreach ([
+        ['products', 'brand', 'VARCHAR(150)'],
+        ['suppliers', 'supplier_type', "VARCHAR(100) NOT NULL DEFAULT 'general'"],
+        ['purchase_orders', 'payment_method', 'VARCHAR(30)'],
+        ['purchase_requisitions', 'payment_method', 'VARCHAR(30)'],
+        ['warehouses', 'group_id', 'INTEGER'],
+        ['purchase_order_items', 'received_quantity', 'INTEGER DEFAULT 0'],
+    ] as [$table, $column, $definition]) {
+        try {
+            $pdo->query("SELECT $column FROM $table WHERE 1 = 0");
+        } catch (PDOException $e) {
+            $pdo->exec("ALTER TABLE $table ADD COLUMN $column $definition");
+        }
+    }
+
+    if (in_array($databaseDriver, ['mysql', 'mariadb'], true)) {
+        $privacyAcknowledgementDDL = "CREATE TABLE IF NOT EXISTS supplier_privacy_acknowledgements (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            supplier_id INT NOT NULL,
+            acknowledged_by VARCHAR(255) NOT NULL,
+            acknowledgement_text TEXT NOT NULL,
+            policy_version VARCHAR(50) NOT NULL,
+            recorded_by INT NULL,
+            acknowledged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_supplier_privacy_supplier (supplier_id)
+        )";
+    } elseif (in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true)) {
+        $privacyAcknowledgementDDL = "CREATE TABLE IF NOT EXISTS supplier_privacy_acknowledgements (
+            id BIGSERIAL PRIMARY KEY,
+            supplier_id INTEGER NOT NULL,
+            acknowledged_by VARCHAR(255) NOT NULL,
+            acknowledgement_text TEXT NOT NULL,
+            policy_version VARCHAR(50) NOT NULL,
+            recorded_by INTEGER,
+            acknowledged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )";
+    } else {
+        $privacyAcknowledgementDDL = "CREATE TABLE IF NOT EXISTS supplier_privacy_acknowledgements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            supplier_id INTEGER NOT NULL,
+            acknowledged_by TEXT NOT NULL,
+            acknowledgement_text TEXT NOT NULL,
+            policy_version TEXT NOT NULL,
+            recorded_by INTEGER,
+            acknowledged_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )";
+    }
+    $pdo->exec($privacyAcknowledgementDDL);
+
+    if (in_array($databaseDriver, ['mysql', 'mariadb'], true)) {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS inventory_groups (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            group_name VARCHAR(150) NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
+        $batchDDL = "CREATE TABLE IF NOT EXISTS inventory_batches (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            receipt_number VARCHAR(100) NOT NULL,
+            po_id INT NOT NULL,
+            po_item_id INT NOT NULL,
+            origin_batch_id INT NULL,
+            product_id INT NOT NULL,
+            supplier_id INT NULL,
+            warehouse_id INT NOT NULL,
+            batch_number VARCHAR(100) NOT NULL,
+            received_quantity INT NOT NULL,
+            available_quantity INT NOT NULL DEFAULT 0,
+            expiry_date DATE NULL,
+            brand_snapshot VARCHAR(150) NULL,
+            quality_status VARCHAR(20) NOT NULL DEFAULT 'rejected',
+            quality_notes TEXT NULL,
+            received_by INT NULL,
+            received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_inventory_batch_product_warehouse (product_id, warehouse_id),
+            INDEX idx_inventory_batch_expiry (expiry_date),
+            INDEX idx_inventory_batch_receipt (receipt_number)
+        )";
+    } elseif (in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true)) {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS inventory_groups (
+            id BIGSERIAL PRIMARY KEY,
+            group_name VARCHAR(150) NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
+        $batchDDL = "CREATE TABLE IF NOT EXISTS inventory_batches (
+            id BIGSERIAL PRIMARY KEY,
+            receipt_number VARCHAR(100) NOT NULL,
+            po_id INTEGER NOT NULL,
+            po_item_id INTEGER NOT NULL,
+            origin_batch_id INTEGER NULL,
+            product_id INTEGER NOT NULL,
+            supplier_id INTEGER NULL,
+            warehouse_id INTEGER NOT NULL,
+            batch_number VARCHAR(100) NOT NULL,
+            received_quantity INTEGER NOT NULL,
+            available_quantity INTEGER NOT NULL DEFAULT 0,
+            expiry_date DATE NULL,
+            brand_snapshot VARCHAR(150) NULL,
+            quality_status VARCHAR(20) NOT NULL DEFAULT 'rejected',
+            quality_notes TEXT NULL,
+            received_by INTEGER NULL,
+            received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )";
+    } else {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS inventory_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_name VARCHAR(150) NOT NULL UNIQUE,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )");
+        $batchDDL = "CREATE TABLE IF NOT EXISTS inventory_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            receipt_number TEXT NOT NULL,
+            po_id INTEGER NOT NULL,
+            po_item_id INTEGER NOT NULL,
+            origin_batch_id INTEGER,
+            product_id INTEGER NOT NULL,
+            supplier_id INTEGER,
+            warehouse_id INTEGER NOT NULL,
+            batch_number TEXT NOT NULL,
+            received_quantity INTEGER NOT NULL,
+            available_quantity INTEGER NOT NULL DEFAULT 0,
+            expiry_date TEXT,
+            brand_snapshot TEXT,
+            quality_status TEXT NOT NULL DEFAULT 'rejected',
+            quality_notes TEXT,
+            received_by INTEGER,
+            received_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )";
+    }
+    $pdo->exec($batchDDL);
+    try {
+        $pdo->query('SELECT origin_batch_id FROM inventory_batches WHERE 1 = 0');
+    } catch (PDOException $e) {
+        $pdo->exec('ALTER TABLE inventory_batches ADD COLUMN origin_batch_id INTEGER');
+    }
+
+    try {
+        $pdo->query('SELECT item_type FROM products WHERE 1 = 0');
+    } catch (PDOException $e) {
+        $pdo->exec("ALTER TABLE products ADD COLUMN item_type VARCHAR(100) NOT NULL DEFAULT 'general'");
+    }
+
+    try {
+        $pdo->query('SELECT warehouse_id FROM purchase_orders WHERE 1 = 0');
+    } catch (PDOException $e) {
+        $pdo->exec('ALTER TABLE purchase_orders ADD COLUMN warehouse_id INTEGER');
+    }
+
+    $databaseDriver = strtolower($pdo->getAttribute(PDO::ATTR_DRIVER_NAME));
+    if (in_array($databaseDriver, ['mysql', 'mariadb'], true)) {
+        $warehouseInventoryDDL = "CREATE TABLE IF NOT EXISTS warehouse_inventory (
+        id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        product_id INTEGER NOT NULL,
+        warehouse_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_product_warehouse (product_id, warehouse_id),
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+        FOREIGN KEY (warehouse_id) REFERENCES warehouses(id) ON DELETE CASCADE
+        )";
+    } elseif (in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true)) {
+        $warehouseInventoryDDL = "CREATE TABLE IF NOT EXISTS warehouse_inventory (
+        id BIGSERIAL PRIMARY KEY,
+        product_id INTEGER NOT NULL,
+        warehouse_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(product_id, warehouse_id),
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+        FOREIGN KEY (warehouse_id) REFERENCES warehouses(id) ON DELETE CASCADE
+        )";
+    } else {
+        $warehouseInventoryDDL = "CREATE TABLE IF NOT EXISTS warehouse_inventory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL,
+        warehouse_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(product_id, warehouse_id),
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+        FOREIGN KEY (warehouse_id) REFERENCES warehouses(id) ON DELETE CASCADE
+        )";
+    }
+    $pdo->exec($warehouseInventoryDDL);
+
+    if (in_array($databaseDriver, ['mysql', 'mariadb'], true)) {
+        $incidentDDL = "CREATE TABLE IF NOT EXISTS inventory_incidents (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            incident_number VARCHAR(100) NOT NULL UNIQUE,
+            product_id INT NOT NULL,
+            warehouse_id INT NOT NULL,
+            quantity INT NOT NULL,
+            issue_type VARCHAR(40) NOT NULL,
+            description TEXT,
+            status VARCHAR(20) NOT NULL DEFAULT 'reported',
+            resolution VARCHAR(40),
+            created_by INT,
+            resolved_by INT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TIMESTAMP NULL,
+            FOREIGN KEY (product_id) REFERENCES products(id),
+            FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+        )";
+    } elseif (in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true)) {
+        $incidentDDL = "CREATE TABLE IF NOT EXISTS inventory_incidents (
+            id BIGSERIAL PRIMARY KEY,
+            incident_number VARCHAR(100) NOT NULL UNIQUE,
+            product_id INTEGER NOT NULL,
+            warehouse_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL,
+            issue_type VARCHAR(40) NOT NULL,
+            description TEXT,
+            status VARCHAR(20) NOT NULL DEFAULT 'reported',
+            resolution VARCHAR(40),
+            created_by INTEGER,
+            resolved_by INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TIMESTAMP NULL,
+            FOREIGN KEY (product_id) REFERENCES products(id),
+            FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+        )";
+    } else {
+        $incidentDDL = "CREATE TABLE IF NOT EXISTS inventory_incidents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            incident_number TEXT NOT NULL UNIQUE,
+            product_id INTEGER NOT NULL,
+            warehouse_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL,
+            issue_type TEXT NOT NULL,
+            description TEXT,
+            status TEXT NOT NULL DEFAULT 'reported',
+            resolution TEXT,
+            created_by INTEGER,
+            resolved_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TEXT,
+            FOREIGN KEY (product_id) REFERENCES products(id),
+            FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+        )";
+    }
+    $pdo->exec($incidentDDL);
+
+    if (in_array($databaseDriver, ['mysql', 'mariadb'], true)) {
+        $migrationCheck = $pdo->prepare("SELECT setting_value FROM system_settings WHERE setting_key = 'report_document_type_migrated'");
+        $migrationCheck->execute();
+        if (!$migrationCheck->fetchColumn()) {
+            $pdo->exec("ALTER TABLE documents MODIFY document_type ENUM('bol', 'packing_list', 'invoice', 'customs', 'certificate', 'contract', 'report') NOT NULL");
+            $migrationWrite = $pdo->prepare("INSERT INTO system_settings (setting_key, setting_value, setting_group, description) VALUES ('report_document_type_migrated', 'true', 'system', 'Allows generated reports in document tracking')");
+            $migrationWrite->execute();
+        }
+    }
+
+    $pdo->exec("UPDATE warehouses SET status = 'active', is_archived = false
+        WHERE warehouse_code = 'MAIN'
+        AND NOT EXISTS (SELECT 1 FROM warehouses WHERE is_archived = false AND status = 'active')");
+
+    $pdo->exec("INSERT INTO warehouses (warehouse_code, name, location, capacity, type, status, is_archived)
+        SELECT 'MAIN', 'Main Warehouse', 'Primary inventory location', 0, 'standard', 'active', false
+        WHERE NOT EXISTS (SELECT 1 FROM warehouses WHERE is_archived = false AND status = 'active')
+        AND NOT EXISTS (SELECT 1 FROM warehouses WHERE warehouse_code = 'MAIN')");
+
+    $pdo->exec("INSERT INTO warehouse_inventory (product_id, warehouse_id, quantity)
+        SELECT p.id, (SELECT id FROM warehouses WHERE is_archived = false ORDER BY id LIMIT 1), p.current_stock
+        FROM products p
+        WHERE NOT EXISTS (SELECT 1 FROM warehouse_inventory wi WHERE wi.product_id = p.id)");
 }
 
 require_once $rootDir . '/includes/function.php';
