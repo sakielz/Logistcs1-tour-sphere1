@@ -66,9 +66,12 @@ $currentPage = basename($_SERVER['PHP_SELF']);
 <nav class="sidebar" id="sidebar">
     <!-- Sidebar Brand -->
     <div class="sidebar-brand">
-        <div>
-            <h2>GlobalSCM</h2>
+        <div class="sidebar-brand-content">
+            <img class="sidebar-brand-logo" src="../assets/image/toursphere_logo.png" alt="Tour Sphere logo">
+            <div>
+            <h2>Tour Sphere</h2>
             <span>Supply Chain Management</span>
+            </div>
         </div>
         <button class="sidebar-close" id="sidebarClose" aria-label="Close Sidebar" type="button">
             <i class="fas fa-times"></i>
@@ -426,6 +429,22 @@ $currentPage = basename($_SERVER['PHP_SELF']);
         padding-left: 6px !important;
         padding-right: 6px !important;
         border-bottom: 1px solid var(--border) !important;
+    }
+
+    .sidebar-brand > .sidebar-brand-content {
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        gap: 10px !important;
+        min-width: 0 !important;
+    }
+
+    .sidebar-brand-logo {
+        width: 42px;
+        height: 42px;
+        flex: 0 0 42px;
+        object-fit: cover;
+        border-radius: 50%;
     }
 
     .sidebar-brand h2 {

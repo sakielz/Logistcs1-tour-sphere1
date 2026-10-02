@@ -125,7 +125,8 @@ if (isset($_GET['timeout']) && $_GET['timeout'] === '1') {
             display: flex;
             align-items: center;
             justify-content: center;
-            overflow: hidden;
+            overflow-x: hidden;
+            overflow-y: auto;
             background: var(--brand-dark);
             position: relative;
         }
@@ -462,6 +463,10 @@ if (isset($_GET['timeout']) && $_GET['timeout'] === '1') {
             .login-card { padding: 36px 24px 30px; border-radius: 20px; }
             .brand-logo  { width: 88px; height: 88px; }
             .brand-name  { font-size: 22px; }
+        }
+
+        @media (max-height: 760px) {
+            .page-wrapper { align-items: flex-start; }
         }
     </style>
 </head>
