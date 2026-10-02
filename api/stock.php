@@ -25,24 +25,34 @@ switch ($action) {
         // Get stock levels for all products
         $limit = $_GET['limit'] ?? 100;
         $category = $_GET['category'] ?? '';
+        $itemType = $_GET['item_type'] ?? '';
         $status = $_GET['status'] ?? '';
+        $warehouseId = (int)($_GET['warehouse_id'] ?? 0);
         
-        $query = "SELECT id, sku, product_name, category, current_stock, min_stock, max_stock, reorder_point, unit_price, unit_measure, status 
-                  FROM products 
-                  WHERE is_archived = 0";
-        $params = [];
+        $query = "SELECT p.id, p.sku, p.product_name, p.category, p.item_type,
+                 COALESCE(wi.quantity, p.current_stock) AS current_stock,
+                 p.min_stock, p.max_stock, p.reorder_point, p.unit_price, p.unit_measure, p.status
+              FROM products p
+              " . ($warehouseId > 0 ? "JOIN warehouse_inventory wi ON wi.product_id = p.id AND wi.warehouse_id = ?" : "LEFT JOIN (SELECT product_id, SUM(quantity) AS quantity FROM warehouse_inventory GROUP BY product_id) wi ON wi.product_id = p.id") . "
+              WHERE p.is_archived = 0";
+        $params = $warehouseId > 0 ? [$warehouseId] : [];
         
         if ($category) {
-            $query .= " AND category = ?";
+            $query .= " AND p.category = ?";
             $params[] = $category;
+        }
+
+        if ($itemType) {
+            $query .= " AND p.item_type = ?";
+            $params[] = $itemType;
         }
         
         if ($status) {
-            $query .= " AND status = ?";
+            $query .= " AND p.status = ?";
             $params[] = $status;
         }
         
-        $query .= " ORDER BY product_name LIMIT ?";
+        $query .= " ORDER BY p.product_name LIMIT ?";
         $params[] = $limit;
         
         $stmt = $pdo->prepare($query);
@@ -128,10 +138,21 @@ switch ($action) {
         $quantity = $data['quantity'] ?? $_POST['quantity'] ?? 0;
         $type = $data['type'] ?? $_POST['type'] ?? 'adjustment';
         $notes = $data['notes'] ?? $_POST['notes'] ?? '';
+        $warehouseId = (int)($data['warehouse_id'] ?? $_POST['warehouse_id'] ?? 0);
         
         if (empty($id)) {
             http_response_code(400);
             echo json_encode(['error' => 'Product ID is required']);
+            exit();
+        }
+
+        if ($warehouseId < 1) {
+            $warehouseId = (int)$pdo->query("SELECT id FROM warehouses WHERE status = 'active' AND is_archived = false ORDER BY id LIMIT 1")->fetchColumn();
+        }
+
+        if ($warehouseId < 1) {
+            http_response_code(400);
+            echo json_encode(['error' => 'No active warehouse is available']);
             exit();
         }
         
@@ -143,10 +164,16 @@ switch ($action) {
         
         try {
             $pdo->beginTransaction();
+
+            $warehouseStmt = $pdo->prepare("SELECT id FROM warehouses WHERE id = ? AND status = 'active' AND is_archived = false");
+            $warehouseStmt->execute([$warehouseId]);
+            if (!$warehouseStmt->fetchColumn()) {
+                throw new Exception('Warehouse not found or inactive');
+            }
             
             // Get current stock
-            $stmt = $pdo->prepare("SELECT current_stock, product_name FROM products WHERE id = ?");
-            $stmt->execute([$id]);
+            $stmt = $pdo->prepare("SELECT p.product_name, COALESCE(wi.quantity, 0) AS current_stock FROM products p LEFT JOIN warehouse_inventory wi ON wi.product_id = p.id AND wi.warehouse_id = ? WHERE p.id = ?");
+            $stmt->execute([$warehouseId, $id]);
             $product = $stmt->fetch();
             
             if (!$product) {
@@ -160,15 +187,28 @@ switch ($action) {
             if ($new_stock < 0) {
                 throw new Exception('Insufficient stock. Current stock: ' . $current_stock);
             }
+            if ($quantity < 0) {
+                validateAndConsumeInventoryBatches($pdo, $id, $warehouseId, abs((int)$quantity));
+            }
             
-            // Update product
-            $stmt = $pdo->prepare("UPDATE products SET current_stock = ? WHERE id = ?");
-            $stmt->execute([$new_stock, $id]);
+            $stmt = $pdo->prepare("SELECT id FROM warehouse_inventory WHERE product_id = ? AND warehouse_id = ?");
+            $stmt->execute([$id, $warehouseId]);
+            $inventoryId = $stmt->fetchColumn();
+            if ($inventoryId) {
+                $stmt = $pdo->prepare("UPDATE warehouse_inventory SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+                $stmt->execute([$new_stock, $inventoryId]);
+            } else {
+                $stmt = $pdo->prepare("INSERT INTO warehouse_inventory (product_id, warehouse_id, quantity) VALUES (?, ?, ?)");
+                $stmt->execute([$id, $warehouseId, $new_stock]);
+            }
+
+            $stmt = $pdo->prepare("UPDATE products SET current_stock = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?) WHERE id = ?");
+            $stmt->execute([$id, $id]);
             
             // Log transaction
             $transaction_type = $quantity > 0 ? 'receiving' : 'issuance';
-            $stmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$id, $transaction_type, abs($quantity), $current_stock, $new_stock, $notes, $_SESSION['user_id']]);
+            $stmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, warehouse_id, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$id, $transaction_type, abs($quantity), $current_stock, $new_stock, $warehouseId, $notes, $_SESSION['user_id']]);
             
             $pdo->commit();
             
@@ -178,6 +218,7 @@ switch ($action) {
                 'success' => true,
                 'message' => 'Stock adjusted successfully',
                 'product_id' => $id,
+                'warehouse_id' => $warehouseId,
                 'previous_stock' => $current_stock,
                 'new_stock' => $new_stock,
                 'change' => $quantity

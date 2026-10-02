@@ -150,6 +150,35 @@ $stmt = $pdo->query("SELECT al.*, u.full_name as user_name
                      LIMIT 10");
 $recentActivities = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+if (($_GET['action'] ?? '') === 'export') {
+    $format = strtolower(trim((string)($_GET['format'] ?? '')));
+    $reportRows = [
+        ['section' => 'Inventory', 'metric' => 'Total Products', 'value' => $totalProducts],
+        ['section' => 'Inventory', 'metric' => 'Inventory Value', 'value' => number_format((float)$inventoryValue, 2, '.', '')],
+        ['section' => 'Inventory', 'metric' => 'Low Stock Items', 'value' => $lowStock],
+        ['section' => 'Inventory', 'metric' => 'Out of Stock Items', 'value' => $outOfStock],
+        ['section' => 'Suppliers', 'metric' => 'Total Suppliers', 'value' => $totalSuppliers],
+        ['section' => 'Procurement', 'metric' => 'Total Purchase Orders', 'value' => $totalPOs],
+        ['section' => 'Procurement', 'metric' => 'Pending Purchase Orders', 'value' => $pendingPOs],
+        ['section' => 'Procurement', 'metric' => 'Received Purchase Orders', 'value' => $receivedPOs],
+        ['section' => 'Logistics', 'metric' => 'Total Shipments', 'value' => $totalShipments],
+        ['section' => 'Inventory', 'metric' => 'Units Received', 'value' => (int)($stockMovements['total_received'] ?? 0)],
+        ['section' => 'Inventory', 'metric' => 'Units Issued', 'value' => (int)($stockMovements['total_issued'] ?? 0)],
+        ['section' => 'Period', 'metric' => 'From', 'value' => $dateFrom],
+        ['section' => 'Period', 'metric' => 'To', 'value' => $dateTo]
+    ];
+    foreach ($topProducts as $product) {
+        $reportRows[] = [
+            'section' => 'Top Products',
+            'metric' => $product['product_name'] . ' (' . $product['sku'] . ')',
+            'value' => 'Stock ' . $product['current_stock'] . '; value ' . number_format((float)$product['total_value'], 2, '.', '')
+        ];
+    }
+
+    require_once __DIR__ . '/../includes/report_export.php';
+    exportTrackedReport($pdo, (int)$_SESSION['user_id'], 'reports', 'Supply Chain Report ' . $dateFrom . ' to ' . $dateTo, $format, $reportRows);
+}
+
 // Get theme setting
 $theme = 'light';
 try {
@@ -1210,9 +1239,6 @@ try {
                         <div class="dropdown-content" id="exportDropdown">
                             <a href="#" onclick="exportReport('pdf')">
                                 <i class="fas fa-file-pdf"></i> Export PDF
-                            </a>
-                            <a href="#" onclick="exportReport('csv')">
-                                <i class="fas fa-file-csv"></i> Export CSV
                             </a>
                             <a href="#" onclick="exportReport('excel')">
                                 <i class="fas fa-file-excel"></i> Export Excel

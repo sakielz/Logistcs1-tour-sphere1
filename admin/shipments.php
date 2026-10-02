@@ -102,6 +102,8 @@ if ($action === 'export' && isset($_GET['format'])) {
         }
         $query .= " ORDER BY s.created_at DESC";
         $stmt=$pdo->prepare($query); $stmt->execute($params); $data=$stmt->fetchAll(PDO::FETCH_ASSOC);
+        require_once __DIR__ . '/../includes/report_export.php';
+        exportTrackedReport($pdo, (int)$_SESSION['user_id'], 'shipments', 'Shipment and Logistics Report', $format, $data);
         while (ob_get_level()) ob_end_clean();
 
         if ($format === 'csv') {
@@ -246,7 +248,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'update_status') {
                 $stmt->execute([$id]);
                 $shipment = $stmt->fetch(PDO::FETCH_ASSOC);
                 if ($shipment && !empty($shipment['po_id'])) {
-                    $stmt = $pdo->prepare("UPDATE purchase_orders SET status = 'received' WHERE id = ?");
+                    $stmt = $pdo->prepare("UPDATE purchase_orders SET status = 'shipped' WHERE id = ? AND status NOT IN ('received', 'completed', 'cancelled')");
                     $stmt->execute([$shipment['po_id']]);
                 }
             }
@@ -1871,8 +1873,8 @@ try {
                             <i class="fas fa-download"></i> Export
                         </button>
                         <div class="dropdown-content" id="exportDropdown">
-                            <a href="shipments.php?action=export&amp;format=csv&amp;status=<?php echo urlencode($statusFilter); ?>&amp;mode=<?php echo urlencode($modeFilter); ?>&amp;carrier=<?php echo urlencode($carrierFilter); ?>&amp;origin=<?php echo urlencode($originFilter); ?>&amp;destination=<?php echo urlencode($destinationFilter); ?>&amp;date_from=<?php echo urlencode($dateFrom); ?>&amp;date_to=<?php echo urlencode($dateTo); ?>&amp;search=<?php echo urlencode($search); ?>">
-                                <i class="fas fa-file-csv"></i> Export CSV
+                            <a href="shipments.php?action=export&amp;format=excel&amp;status=<?php echo urlencode($statusFilter); ?>&amp;mode=<?php echo urlencode($modeFilter); ?>&amp;carrier=<?php echo urlencode($carrierFilter); ?>&amp;origin=<?php echo urlencode($originFilter); ?>&amp;destination=<?php echo urlencode($destinationFilter); ?>&amp;date_from=<?php echo urlencode($dateFrom); ?>&amp;date_to=<?php echo urlencode($dateTo); ?>&amp;search=<?php echo urlencode($search); ?>">
+                                <i class="fas fa-file-excel"></i> Export Excel
                             </a>
                             <a href="shipments.php?action=export&amp;format=pdf&amp;status=<?php echo urlencode($statusFilter); ?>&amp;mode=<?php echo urlencode($modeFilter); ?>&amp;carrier=<?php echo urlencode($carrierFilter); ?>&amp;origin=<?php echo urlencode($originFilter); ?>&amp;destination=<?php echo urlencode($destinationFilter); ?>&amp;date_from=<?php echo urlencode($dateFrom); ?>&amp;date_to=<?php echo urlencode($dateTo); ?>&amp;search=<?php echo urlencode($search); ?>">
                                 <i class="fas fa-file-pdf"></i> Export PDF

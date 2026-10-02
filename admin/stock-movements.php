@@ -28,9 +28,17 @@ $action = isset($_GET['action']) ? $_GET['action'] : 'list';
 // ============================================
 $productFilter = isset($_GET['product_id']) ? (int)$_GET['product_id'] : '';
 $typeFilter = isset($_GET['type']) ? $_GET['type'] : '';
+$warehouseFilter = isset($_GET['warehouse_id']) ? (int)$_GET['warehouse_id'] : 0;
 $userFilter = isset($_GET['user_id']) ? (int)$_GET['user_id'] : '';
 $datePreset = isset($_GET['date_preset']) ? $_GET['date_preset'] : 'last_30';
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
+
+try {
+    $stmt = $pdo->query("SELECT id, name, warehouse_code FROM warehouses WHERE is_archived = 0 AND status = 'active' ORDER BY name");
+    $warehouses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $warehouses = [];
+}
 
 // Set date range based on preset
 switch ($datePreset) {
@@ -66,9 +74,10 @@ if ($action === 'export' && isset($_GET['format'])) {
     $format = $_GET['format'];
     
     try {
-        $query = "SELECT it.*, p.sku, p.product_name, u.full_name as user_name 
+        $query = "SELECT it.*, p.sku, p.product_name, u.full_name as user_name, w.name as warehouse_name
                   FROM inventory_transactions it 
                   JOIN products p ON it.product_id = p.id 
+              LEFT JOIN warehouses w ON it.warehouse_id = w.id
                   LEFT JOIN users u ON it.created_by = u.id 
                   WHERE DATE(it.created_at) BETWEEN ? AND ?";
         $params = [$dateFrom, $dateTo];
@@ -80,6 +89,10 @@ if ($action === 'export' && isset($_GET['format'])) {
         if (!empty($productFilter)) {
             $query .= " AND it.product_id = ?";
             $params[] = $productFilter;
+        }
+        if ($warehouseFilter > 0) {
+            $query .= " AND it.warehouse_id = ?";
+            $params[] = $warehouseFilter;
         }
         if (!empty($userFilter)) {
             $query .= " AND it.created_by = ?";
@@ -98,6 +111,9 @@ if ($action === 'export' && isset($_GET['format'])) {
         $stmt = $pdo->prepare($query);
         $stmt->execute($params);
         $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        require_once __DIR__ . '/../includes/report_export.php';
+        exportTrackedReport($pdo, (int)$_SESSION['user_id'], 'stock_movements', 'Warehouse Stock Movements', $format, $data);
         
         if ($format === 'csv') {
             header('Content-Type: text/csv');
@@ -152,39 +168,229 @@ if ($action === 'export' && isset($_GET['format'])) {
 }
 
 // ============================================
+// REPORT DAMAGE OR CUSTOMER RETURN
+// ============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'report_incident') {
+    $productId = (int)($_POST['product_id'] ?? 0);
+    $warehouseId = (int)($_POST['warehouse_id'] ?? 0);
+    $quantity = (int)($_POST['quantity'] ?? 0);
+    $issueType = (string)($_POST['issue_type'] ?? '');
+    $description = trim((string)($_POST['description'] ?? ''));
+
+    try {
+        if ($productId < 1 || $warehouseId < 1 || $quantity < 1 || !in_array($issueType, ['damaged', 'customer_return'], true)) {
+            throw new RuntimeException('Choose an item, warehouse, valid quantity, and issue type.');
+        }
+        $warehouseStmt = $pdo->prepare("SELECT id FROM warehouses WHERE id = ? AND status = 'active' AND is_archived = false");
+        $warehouseStmt->execute([$warehouseId]);
+        if (!$warehouseStmt->fetchColumn()) throw new RuntimeException('Select an active warehouse.');
+
+        $pdo->beginTransaction();
+        $incidentNumber = 'INC-' . date('Ymd') . '-' . strtoupper(bin2hex(random_bytes(3)));
+        $stmt = $pdo->prepare("INSERT INTO inventory_incidents (incident_number, product_id, warehouse_id, quantity, issue_type, description, status, created_by) VALUES (?, ?, ?, ?, ?, ?, 'reported', ?)");
+        $stmt->execute([$incidentNumber, $productId, $warehouseId, $quantity, $issueType, $description, $_SESSION['user_id']]);
+        $incidentId = (int)$pdo->lastInsertId();
+        $documentStmt = $pdo->prepare("INSERT INTO documents (document_number, document_type, title, description, related_module, related_id, status, created_by) VALUES (?, 'report', ?, ?, 'inventory_incidents', ?, 'pending', ?)");
+        $documentStmt->execute(['DOC-' . $incidentNumber, 'Inventory Incident ' . $incidentNumber, $description, $incidentId, $_SESSION['user_id']]);
+
+        if ($issueType === 'damaged') {
+            validateAndConsumeInventoryBatches($pdo, $productId, $warehouseId, $quantity, true);
+            $stockStmt = $pdo->prepare("SELECT quantity FROM warehouse_inventory WHERE product_id = ? AND warehouse_id = ?");
+            $stockStmt->execute([$productId, $warehouseId]);
+            $previousBalance = (int)($stockStmt->fetchColumn() ?: 0);
+            if ($previousBalance < $quantity) {
+                throw new RuntimeException('The reported damaged quantity cannot exceed stock currently assigned to that warehouse.');
+            }
+            $newBalance = $previousBalance - $quantity;
+            $stockStmt = $pdo->prepare("UPDATE warehouse_inventory SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND warehouse_id = ?");
+            $stockStmt->execute([$newBalance, $productId, $warehouseId]);
+            $stockStmt = $pdo->prepare("UPDATE products SET current_stock = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?) WHERE id = ?");
+            $stockStmt->execute([$productId, $productId]);
+            $stockStmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, warehouse_id, notes, reference_document, created_by) VALUES (?, 'adjustment', ?, ?, ?, ?, ?, ?, ?)");
+            $stockStmt->execute([$productId, $quantity, $previousBalance, $newBalance, $warehouseId, 'Damaged stock quarantined for incident ' . $incidentNumber, $incidentNumber, $_SESSION['user_id']]);
+        }
+
+        $pdo->commit();
+        logAudit($_SESSION['user_id'], 'report_inventory_incident', 'inventory', 'Reported ' . $issueType . ' incident ' . $incidentNumber);
+        $_SESSION['success'] = 'Incident ' . $incidentNumber . ' reported. Resolve it after inspection.';
+        header('Location: stock-movements.php');
+        exit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $error = 'Could not report incident: ' . $e->getMessage();
+        $action = 'report_incident';
+    }
+}
+
+// ============================================
+// RESOLVE INVENTORY INCIDENT
+// ============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'resolve_incident') {
+    $incidentId = (int)($_POST['incident_id'] ?? 0);
+    $resolution = (string)($_POST['resolution'] ?? '');
+
+    try {
+        if ($incidentId < 1 || !in_array($resolution, ['restock', 'supplier_return', 'write_off'], true)) {
+            throw new RuntimeException('Choose a valid incident resolution.');
+        }
+        $pdo->beginTransaction();
+        $stmt = $pdo->prepare("SELECT * FROM inventory_incidents WHERE id = ? AND status = 'reported'");
+        $stmt->execute([$incidentId]);
+        $incident = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$incident) throw new RuntimeException('The incident was already resolved or does not exist.');
+
+        $quantity = (int)$incident['quantity'];
+        $productId = (int)$incident['product_id'];
+        $warehouseId = (int)$incident['warehouse_id'];
+        $changesStock = $resolution === 'restock';
+
+        if ($changesStock) {
+            $balanceStmt = $pdo->prepare("SELECT quantity FROM warehouse_inventory WHERE product_id = ? AND warehouse_id = ?");
+            $balanceStmt->execute([$productId, $warehouseId]);
+            $balanceValue = $balanceStmt->fetchColumn();
+            $previousBalance = (int)($balanceValue ?: 0);
+            if ($incident['issue_type'] === 'damaged' && $previousBalance < $quantity) {
+                throw new RuntimeException('Warehouse stock changed since the incident was reported; reconcile it before resolving.');
+            }
+            $newBalance = $previousBalance + $quantity;
+
+            if ($balanceValue !== false) {
+                $stmt = $pdo->prepare("UPDATE warehouse_inventory SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND warehouse_id = ?");
+                $stmt->execute([$newBalance, $productId, $warehouseId]);
+            } else {
+                $stmt = $pdo->prepare("INSERT INTO warehouse_inventory (product_id, warehouse_id, quantity) VALUES (?, ?, ?)");
+                $stmt->execute([$productId, $warehouseId, $newBalance]);
+            }
+
+            $stmt = $pdo->prepare("UPDATE products SET current_stock = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?) WHERE id = ?");
+            $stmt->execute([$productId, $productId]);
+            $transactionType = 'return';
+            $stmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, warehouse_id, notes, reference_document, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $movementNote = 'Incident ' . $incident['incident_number'] . ' resolved as ' . $resolution;
+            $stmt->execute([$productId, $transactionType, $quantity, $previousBalance, $newBalance, $warehouseId, $movementNote, $incident['incident_number'], $_SESSION['user_id']]);
+        }
+
+        $stmt = $pdo->prepare("UPDATE inventory_incidents SET status = 'resolved', resolution = ?, resolved_by = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ?");
+        $stmt->execute([$resolution, $_SESSION['user_id'], $incidentId]);
+        $stmt = $pdo->prepare("UPDATE documents SET status = 'approved', updated_at = CURRENT_TIMESTAMP WHERE related_module = 'inventory_incidents' AND related_id = ?");
+        $stmt->execute([$incidentId]);
+        $pdo->commit();
+        logAudit($_SESSION['user_id'], 'resolve_inventory_incident', 'inventory', 'Resolved incident ' . $incident['incident_number'] . ' as ' . $resolution);
+        $_SESSION['success'] = 'Incident resolved.';
+        header('Location: stock-movements.php');
+        exit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $_SESSION['error'] = 'Could not resolve incident: ' . $e->getMessage();
+        header('Location: stock-movements.php');
+        exit();
+    }
+}
+
+// ============================================
 // HANDLE MANUAL ADJUSTMENT
 // ============================================
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'adjust') {
     $product_id = isset($_POST['product_id']) ? (int)$_POST['product_id'] : 0;
     $quantity = isset($_POST['quantity']) ? (int)$_POST['quantity'] : 0;
     $adjustment_type = isset($_POST['adjustment_type']) ? $_POST['adjustment_type'] : '';
+    $warehouse_id = isset($_POST['warehouse_id']) ? (int)$_POST['warehouse_id'] : 0;
+    $destination_warehouse_id = isset($_POST['destination_warehouse_id']) ? (int)$_POST['destination_warehouse_id'] : 0;
     $notes = isset($_POST['notes']) ? trim($_POST['notes']) : '';
     $reference = isset($_POST['reference']) ? trim($_POST['reference']) : '';
     
-    if ($product_id > 0 && $quantity > 0 && !empty($adjustment_type)) {
+    if ($product_id > 0 && $quantity > 0 && in_array($adjustment_type, ['add', 'remove', 'transfer'], true) && $warehouse_id > 0) {
         try {
             $pdo->beginTransaction();
+
+            $warehouseStmt = $pdo->prepare("SELECT id FROM warehouses WHERE id = ? AND status = 'active' AND is_archived = false");
+            $warehouseStmt->execute([$warehouse_id]);
+            if (!$warehouseStmt->fetchColumn()) {
+                throw new RuntimeException('Select an active warehouse.');
+            }
             
-            // Get current stock
-            $stmt = $pdo->prepare("SELECT current_stock, product_name FROM products WHERE id = ? FOR UPDATE");
-            $stmt->execute([$product_id]);
+            $stmt = $pdo->prepare("SELECT p.product_name, COALESCE(wi.quantity, 0) AS current_stock FROM products p LEFT JOIN warehouse_inventory wi ON wi.product_id = p.id AND wi.warehouse_id = ? WHERE p.id = ?");
+            $stmt->execute([$warehouse_id, $product_id]);
             $product = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if (!$product) {
                 throw new Exception('Product not found');
             }
+
+            if ($adjustment_type === 'transfer') {
+                if ($destination_warehouse_id < 1 || $destination_warehouse_id === $warehouse_id) {
+                    throw new RuntimeException('Choose a different destination warehouse.');
+                }
+                $destinationCheck = $pdo->prepare("SELECT id, name, warehouse_code FROM warehouses WHERE id = ? AND status = 'active' AND is_archived = false");
+                $destinationCheck->execute([$destination_warehouse_id]);
+                $destinationWarehouse = $destinationCheck->fetch(PDO::FETCH_ASSOC);
+                if (!$destinationWarehouse) throw new RuntimeException('Select an active destination warehouse.');
+
+                $sourceBalance = (int)$product['current_stock'];
+                if ($sourceBalance < $quantity) throw new RuntimeException('Transfer quantity exceeds stock in the source warehouse.');
+                moveAvailableInventoryBatches($pdo, $product_id, $warehouse_id, $destination_warehouse_id, $quantity);
+
+                $destinationStmt = $pdo->prepare("SELECT quantity FROM warehouse_inventory WHERE product_id = ? AND warehouse_id = ?");
+                $destinationStmt->execute([$product_id, $destination_warehouse_id]);
+                $destinationValue = $destinationStmt->fetchColumn();
+                $destinationBalance = (int)($destinationValue ?: 0);
+                $sourceAfter = $sourceBalance - $quantity;
+                $destinationAfter = $destinationBalance + $quantity;
+
+                $sourceUpdate = $pdo->prepare("UPDATE warehouse_inventory SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND warehouse_id = ?");
+                $sourceUpdate->execute([$sourceAfter, $product_id, $warehouse_id]);
+                if ($destinationValue !== false) {
+                    $destinationUpdate = $pdo->prepare("UPDATE warehouse_inventory SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND warehouse_id = ?");
+                    $destinationUpdate->execute([$destinationAfter, $product_id, $destination_warehouse_id]);
+                } else {
+                    $destinationUpdate = $pdo->prepare("INSERT INTO warehouse_inventory (product_id, warehouse_id, quantity) VALUES (?, ?, ?)");
+                    $destinationUpdate->execute([$product_id, $destination_warehouse_id, $destinationAfter]);
+                }
+
+                $sourceNameStmt = $pdo->prepare("SELECT name, warehouse_code FROM warehouses WHERE id = ?");
+                $sourceNameStmt->execute([$warehouse_id]);
+                $sourceWarehouse = $sourceNameStmt->fetch(PDO::FETCH_ASSOC);
+                $sourceLabel = $sourceWarehouse['name'] . ' (' . $sourceWarehouse['warehouse_code'] . ')';
+                $destinationLabel = $destinationWarehouse['name'] . ' (' . $destinationWarehouse['warehouse_code'] . ')';
+                $reference = $reference !== '' ? $reference : 'TR-' . date('YmdHis');
+                $transactionStmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, warehouse_id, notes, reference_document, created_by) VALUES (?, 'transfer', ?, ?, ?, ?, ?, ?, ?)");
+                $transactionStmt->execute([$product_id, $quantity, $sourceBalance, $sourceAfter, $warehouse_id, 'Transfer out to ' . $destinationLabel . '. ' . $notes, $reference, $_SESSION['user_id']]);
+                $transactionStmt->execute([$product_id, $quantity, $destinationBalance, $destinationAfter, $destination_warehouse_id, 'Transfer in from ' . $sourceLabel . '. ' . $notes, $reference, $_SESSION['user_id']]);
+
+                $aggregateStmt = $pdo->prepare("UPDATE products SET current_stock = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?) WHERE id = ?");
+                $aggregateStmt->execute([$product_id, $product_id]);
+                $pdo->commit();
+                logAudit($_SESSION['user_id'], 'transfer_stock', 'inventory', 'Transferred ' . $quantity . ' of ' . $product['product_name'] . ' from ' . $sourceLabel . ' to ' . $destinationLabel);
+                $_SESSION['success'] = 'Stock transferred between warehouses.';
+                header('Location: stock-movements.php');
+                exit();
+            }
             
             $current_stock = (int)$product['current_stock'];
             $new_stock = $adjustment_type === 'add' ? $current_stock + $quantity : max(0, $current_stock - $quantity);
+            $actualQuantity = abs($new_stock - $current_stock);
+            if ($adjustment_type === 'remove' && $actualQuantity > 0) {
+                validateAndConsumeInventoryBatches($pdo, $product_id, $warehouse_id, $actualQuantity);
+            }
             
-            // Update product
-            $stmt = $pdo->prepare("UPDATE products SET current_stock = ? WHERE id = ?");
-            $stmt->execute([$new_stock, $product_id]);
+            $stmt = $pdo->prepare("SELECT id FROM warehouse_inventory WHERE product_id = ? AND warehouse_id = ?");
+            $stmt->execute([$product_id, $warehouse_id]);
+            $inventoryId = $stmt->fetchColumn();
+            if ($inventoryId) {
+                $stmt = $pdo->prepare("UPDATE warehouse_inventory SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+                $stmt->execute([$new_stock, $inventoryId]);
+            } else {
+                $stmt = $pdo->prepare("INSERT INTO warehouse_inventory (product_id, warehouse_id, quantity) VALUES (?, ?, ?)");
+                $stmt->execute([$product_id, $warehouse_id, $new_stock]);
+            }
+
+            $stmt = $pdo->prepare("UPDATE products SET current_stock = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?) WHERE id = ?");
+            $stmt->execute([$product_id, $product_id]);
             
             // Log transaction
             $transaction_type = $adjustment_type === 'add' ? 'receiving' : 'issuance';
-            $stmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, notes, reference_document, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$product_id, $transaction_type, $quantity, $current_stock, $new_stock, $notes, $reference, $_SESSION['user_id']]);
+            $stmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, warehouse_id, notes, reference_document, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$product_id, $transaction_type, $actualQuantity, $current_stock, $new_stock, $warehouse_id, $notes, $reference, $_SESSION['user_id']]);
             
             $pdo->commit();
             
@@ -212,7 +418,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Sorting
 $sortField = isset($_GET['sort']) ? $_GET['sort'] : 'created_at';
 $sortOrder = isset($_GET['order']) && $_GET['order'] === 'asc' ? 'ASC' : 'DESC';
-$allowedSortFields = ['created_at', 'product_name', 'sku', 'transaction_type', 'quantity', 'previous_balance', 'new_balance', 'user_name'];
+$allowedSortFields = ['created_at', 'product_name', 'sku', 'transaction_type', 'warehouse_name', 'reference_document', 'quantity', 'previous_balance', 'new_balance', 'user_name'];
 if (!in_array($sortField, $allowedSortFields)) {
     $sortField = 'created_at';
 }
@@ -229,9 +435,10 @@ if ($pageNum < 1) {
 $offset = ($pageNum - 1) * $itemsPerPage;
 
 // Build query
-$query = "SELECT it.*, p.sku, p.product_name, u.full_name as user_name 
+$query = "SELECT it.*, p.sku, p.product_name, u.full_name as user_name, w.name as warehouse_name 
           FROM inventory_transactions it 
           JOIN products p ON it.product_id = p.id 
+          LEFT JOIN warehouses w ON it.warehouse_id = w.id
           LEFT JOIN users u ON it.created_by = u.id 
           WHERE DATE(it.created_at) BETWEEN ? AND ?";
 $params = [$dateFrom, $dateTo];
@@ -239,6 +446,11 @@ $params = [$dateFrom, $dateTo];
 if (!empty($productFilter)) {
     $query .= " AND it.product_id = ?";
     $params[] = $productFilter;
+}
+
+if ($warehouseFilter > 0) {
+    $query .= " AND it.warehouse_id = ?";
+    $params[] = $warehouseFilter;
 }
 
 if (!empty($typeFilter)) {
@@ -260,7 +472,7 @@ if (!empty($search)) {
 }
 
 // Count total records
-$countQuery = str_replace("it.*, p.sku, p.product_name, u.full_name as user_name", "COUNT(*) as total", $query);
+$countQuery = str_replace("SELECT it.*, p.sku, p.product_name, u.full_name as user_name, w.name as warehouse_name", "SELECT COUNT(*) as total", $query);
 $stmt = $pdo->prepare($countQuery);
 $stmt->execute($params);
 $totalItems = (int)($stmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
@@ -284,6 +496,22 @@ foreach ($params as $key => $val) {
 }
 $stmt->execute();
 $transactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+$incidentQuery = "SELECT ii.*, p.sku, p.product_name, w.name AS warehouse_name, reporter.full_name AS reporter_name
+                  FROM inventory_incidents ii
+                  JOIN products p ON p.id = ii.product_id
+                  JOIN warehouses w ON w.id = ii.warehouse_id
+                  LEFT JOIN users reporter ON reporter.id = ii.created_by
+                  WHERE 1 = 1";
+$incidentParams = [];
+if ($warehouseFilter > 0) {
+    $incidentQuery .= " AND ii.warehouse_id = ?";
+    $incidentParams[] = $warehouseFilter;
+}
+$incidentQuery .= " ORDER BY CASE WHEN ii.status = 'reported' THEN 0 ELSE 1 END, ii.created_at DESC LIMIT 50";
+$incidentStmt = $pdo->prepare($incidentQuery);
+$incidentStmt->execute($incidentParams);
+$incidents = $incidentStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Get products for filter
 try {
@@ -1640,6 +1868,9 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
                     <a href="stock-movements.php?action=adjust" class="btn btn-primary">
                         <i class="fas fa-plus"></i> Record Movement
                     </a>
+                    <a href="stock-movements.php?action=report_incident" class="btn btn-warning">
+                        <i class="fas fa-triangle-exclamation"></i> Report Damage / Return
+                    </a>
                     
                     <!-- Export Dropdown -->
                     <div class="dropdown">
@@ -1647,10 +1878,10 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
                             <i class="fas fa-download"></i> Export
                         </button>
                         <div class="dropdown-content" id="exportDropdown">
-                            <a href="stock-movements.php?action=export&format=csv<?php echo '&date_from=' . $dateFrom . '&date_to=' . $dateTo . (!empty($typeFilter) ? '&type=' . $typeFilter : '') . (!empty($productFilter) ? '&product_id=' . $productFilter : '') . (!empty($userFilter) ? '&user_id=' . $userFilter : '') . (!empty($search) ? '&search=' . urlencode($search) : ''); ?>">
-                                <i class="fas fa-file-csv"></i> Export CSV
+                            <a href="stock-movements.php?action=export&format=pdf<?php echo '&date_from=' . $dateFrom . '&date_to=' . $dateTo . (!empty($typeFilter) ? '&type=' . $typeFilter : '') . (!empty($productFilter) ? '&product_id=' . $productFilter : '') . (!empty($warehouseFilter) ? '&warehouse_id=' . $warehouseFilter : '') . (!empty($userFilter) ? '&user_id=' . $userFilter : '') . (!empty($search) ? '&search=' . urlencode($search) : ''); ?>">
+                                <i class="fas fa-file-pdf"></i> Export PDF
                             </a>
-                            <a href="stock-movements.php?action=export&format=excel<?php echo '&date_from=' . $dateFrom . '&date_to=' . $dateTo . (!empty($typeFilter) ? '&type=' . $typeFilter : '') . (!empty($productFilter) ? '&product_id=' . $productFilter : '') . (!empty($userFilter) ? '&user_id=' . $userFilter : '') . (!empty($search) ? '&search=' . urlencode($search) : ''); ?>">
+                            <a href="stock-movements.php?action=export&format=excel<?php echo '&date_from=' . $dateFrom . '&date_to=' . $dateTo . (!empty($typeFilter) ? '&type=' . $typeFilter : '') . (!empty($productFilter) ? '&product_id=' . $productFilter : '') . (!empty($warehouseFilter) ? '&warehouse_id=' . $warehouseFilter : '') . (!empty($userFilter) ? '&user_id=' . $userFilter : '') . (!empty($search) ? '&search=' . urlencode($search) : ''); ?>">
                                 <i class="fas fa-file-excel"></i> Export Excel
                             </a>
                         </div>
@@ -1719,6 +1950,15 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
                         </option>
                         <?php endforeach; ?>
                     </select>
+
+                    <select name="warehouse_id">
+                        <option value="">All Warehouses</option>
+                        <?php foreach ($warehouses as $warehouse): ?>
+                        <option value="<?php echo (int)$warehouse['id']; ?>" <?php echo $warehouseFilter === (int)$warehouse['id'] ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($warehouse['name'] . ' (' . $warehouse['warehouse_code'] . ')'); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
                     
                     <select name="type">
                         <option value="">All Types</option>
@@ -1750,7 +1990,7 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
                         <button type="submit" class="btn btn-primary">
                             <i class="fas fa-search"></i> Filter
                         </button>
-                        <?php if (!empty($search) || !empty($productFilter) || !empty($typeFilter) || !empty($userFilter) || $datePreset !== 'last_30'): ?>
+                        <?php if (!empty($search) || !empty($productFilter) || !empty($typeFilter) || !empty($warehouseFilter) || !empty($userFilter) || $datePreset !== 'last_30'): ?>
                         <a href="stock-movements.php" class="btn btn-outline">
                             <i class="fas fa-times"></i> Clear
                         </a>
@@ -1759,6 +1999,67 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
                 </form>
             </div>
             
+            <div class="table-container">
+                <div class="table-header">
+                    <h2><i class="fas fa-clipboard-check"></i> Damage and Return Incidents</h2>
+                    <span class="role-badge"><?php echo count(array_filter($incidents, static function ($incident) { return $incident['status'] === 'reported'; })); ?> awaiting review</span>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Incident</th>
+                                <th>Reported</th>
+                                <th>Item</th>
+                                <th>Issue</th>
+                                <th>Qty</th>
+                                <th onclick="sortTable('warehouse_name')" class="<?php echo $sortField === 'warehouse_name' ? 'sorted' : ''; ?>">
+                                    Warehouse <span class="sort-icon"><?php echo $sortField === 'warehouse_name' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                </th>
+                                <th onclick="sortTable('reference_document')" class="<?php echo $sortField === 'reference_document' ? 'sorted' : ''; ?>">
+                                    Reference <span class="sort-icon"><?php echo $sortField === 'reference_document' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                </th>
+                                <th>Description</th>
+                                <th>Status / Resolution</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php if ($incidents): ?>
+                                <?php foreach ($incidents as $incident): ?>
+                                <tr>
+                                    <td><strong><?php echo htmlspecialchars($incident['incident_number']); ?></strong></td>
+                                    <td><?php echo date('M d, Y', strtotime($incident['created_at'])); ?><br><small><?php echo htmlspecialchars($incident['reporter_name'] ?? 'Unknown'); ?></small></td>
+                                    <td><?php echo htmlspecialchars($incident['sku'] . ' - ' . $incident['product_name']); ?></td>
+                                    <td><?php echo $incident['issue_type'] === 'damaged' ? 'Damaged in warehouse' : 'Customer return'; ?></td>
+                                    <td><?php echo number_format($incident['quantity']); ?></td>
+                                    <td><?php echo htmlspecialchars($incident['warehouse_name']); ?></td>
+                                    <td><?php echo htmlspecialchars($incident['description'] ?? ''); ?></td>
+                                    <td>
+                                        <?php if ($incident['status'] === 'reported'): ?>
+                                        <form method="POST" action="stock-movements.php?action=resolve_incident" style="display:flex;gap:6px;min-width:210px;">
+                                            <input type="hidden" name="incident_id" value="<?php echo (int)$incident['id']; ?>">
+                                            <select name="resolution" required aria-label="Incident resolution">
+                                                <option value="">Resolve as...</option>
+                                                <option value="restock">Return to usable stock</option>
+                                                <option value="supplier_return">Return to supplier</option>
+                                                <option value="write_off">Write off</option>
+                                            </select>
+                                            <button type="submit" class="btn btn-primary btn-sm" title="Resolve incident"><i class="fas fa-check"></i></button>
+                                        </form>
+                                        <?php else: ?>
+                                        <span class="status-badge status-active">Resolved: <?php echo htmlspecialchars(str_replace('_', ' ', $incident['resolution'] ?? '')); ?></span>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <tr><td colspan="8" class="empty-state">No damage or return incidents reported.</td></tr>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
             <div class="table-container">
                 <div class="table-header">
                     <h2>Transaction History</h2>
@@ -1783,6 +2084,7 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
                                 <th onclick="sortTable('transaction_type')" class="<?php echo $sortField === 'transaction_type' ? 'sorted' : ''; ?>">
                                     Type <span class="sort-icon"><?php echo $sortField === 'transaction_type' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                 </th>
+                                <th>Warehouse</th>
                                 <th onclick="sortTable('quantity')" class="<?php echo $sortField === 'quantity' ? 'sorted' : ''; ?>">
                                     Qty <span class="sort-icon"><?php echo $sortField === 'quantity' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                 </th>
@@ -1816,11 +2118,11 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
                                             <?php echo ucfirst($t['transaction_type']); ?>
                                         </span>
                                     </td>
-                                    <td style="font-weight: 600; <?php 
-                                        echo $t['transaction_type'] === 'receiving' ? 'color: var(--accent);' : 
-                                            ($t['transaction_type'] === 'issuance' ? 'color: #DC2626;' : 'color: #F59E0B;');
-                                    ?>">
-                                        <?php echo $t['transaction_type'] === 'issuance' ? '-' : '+'; ?>
+                                    <td><?php echo htmlspecialchars($t['warehouse_name'] ?? 'Unassigned'); ?></td>
+                                    <td><?php echo htmlspecialchars($t['reference_document'] ?? ''); ?></td>
+                                    <?php $isOutMovement = $t['transaction_type'] === 'issuance' || (int)$t['new_balance'] < (int)$t['previous_balance']; ?>
+                                    <td style="font-weight: 600; color: <?php echo $isOutMovement ? '#DC2626' : (in_array($t['transaction_type'], ['receiving', 'return', 'transfer'], true) ? 'var(--accent)' : '#F59E0B'); ?>;">
+                                        <?php echo $isOutMovement ? '-' : '+'; ?>
                                         <?php echo number_format($t['quantity']); ?>
                                     </td>
                                     <td><?php echo number_format($t['previous_balance']); ?></td>
@@ -1833,7 +2135,7 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
                                 <?php endforeach; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="9" class="empty-state">
+                                    <td colspan="11" class="empty-state">
                                         <i class="fas fa-exchange-alt"></i>
                                         <p>No transactions found for this period</p>
                                     </td>
@@ -1883,6 +2185,55 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
             </div>
         </main>
     </div>
+
+    <div id="incidentModal" class="modal-overlay" style="display: <?php echo $action === 'report_incident' ? 'flex' : 'none'; ?>;">
+        <div class="modal">
+            <h3><i class="fas fa-triangle-exclamation" style="color:#D97706;"></i> Report Damaged Item / Return</h3>
+            <?php if ($action === 'report_incident' && isset($error)): ?>
+            <div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div>
+            <?php endif; ?>
+            <form method="POST" action="stock-movements.php?action=report_incident">
+                <div class="form-group">
+                    <label>Warehouse *</label>
+                    <select name="warehouse_id" required>
+                        <?php foreach ($warehouses as $warehouse): ?>
+                        <option value="<?php echo (int)$warehouse['id']; ?>" <?php echo $warehouseFilter === (int)$warehouse['id'] ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($warehouse['name'] . ' (' . $warehouse['warehouse_code'] . ')'); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Item *</label>
+                    <select name="product_id" required>
+                        <option value="">Select item</option>
+                        <?php foreach ($products as $product): ?>
+                        <option value="<?php echo (int)$product['id']; ?>"><?php echo htmlspecialchars($product['sku'] . ' - ' . $product['product_name']); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Issue Type *</label>
+                    <select name="issue_type" required>
+                        <option value="damaged">Damaged in warehouse</option>
+                        <option value="customer_return">Customer return</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Quantity *</label>
+                    <input type="number" name="quantity" min="1" required>
+                </div>
+                <div class="form-group">
+                    <label>Description / reference</label>
+                    <textarea name="description" rows="3" placeholder="Describe the condition and reference the return or inspection record."></textarea>
+                </div>
+                <div class="form-actions">
+                    <a href="stock-movements.php" class="btn btn-outline">Cancel</a>
+                    <button type="submit" class="btn btn-warning"><i class="fas fa-flag"></i> Report Incident</button>
+                </div>
+            </form>
+        </div>
+    </div>
     
     <!-- Adjust Stock Modal -->
     <div id="adjustModal" class="modal-overlay" style="display: <?php echo ($action === 'adjust' || isset($error)) ? 'flex' : 'none'; ?>;">
@@ -1892,7 +2243,17 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
                 Manual Stock Adjustment
                 <button type="button" class="close-modal" onclick="closeAdjustModal()">&times;</button>
             </h3>
-            <form method="POST" action="stock-movements.php" onsubmit="return validateAdjustForm()">
+            <form method="POST" action="stock-movements.php?action=adjust" onsubmit="return validateAdjustForm()">
+                <div class="form-group">
+                    <label>Warehouse *</label>
+                    <select name="warehouse_id" required>
+                        <?php foreach ($warehouses as $warehouse): ?>
+                        <option value="<?php echo (int)$warehouse['id']; ?>" <?php echo $warehouseFilter === (int)$warehouse['id'] ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($warehouse['name'] . ' (' . $warehouse['warehouse_code'] . ')'); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
                 <div class="form-group">
                     <label>Product *</label>
                     <input type="text" id="productSearch" list="productOptions" autocomplete="off"
@@ -1907,9 +2268,22 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
                 
                 <div class="form-group">
                     <label>Adjustment Type *</label>
-                    <select name="adjustment_type" required>
+                    <select name="adjustment_type" required onchange="toggleTransferWarehouse(this)">
                         <option value="add">Add Stock (Receiving)</option>
                         <option value="remove">Remove Stock (Issuance)</option>
+                        <option value="transfer">Transfer to Another Warehouse</option>
+                    </select>
+                </div>
+
+                <div class="form-group" id="destinationWarehouseGroup" style="display:none;">
+                    <label>Destination Warehouse *</label>
+                    <select name="destination_warehouse_id" id="destinationWarehouseId" disabled>
+                        <option value="">Select destination</option>
+                        <?php foreach ($warehouses as $warehouse): ?>
+                        <option value="<?php echo (int)$warehouse['id']; ?>">
+                            <?php echo htmlspecialchars($warehouse['name'] . ' (' . $warehouse['warehouse_code'] . ')'); ?>
+                        </option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
                 
@@ -1975,7 +2349,26 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
                 alert('Please select a valid product from the list.');
                 return false;
             }
+            var adjustmentType = document.querySelector('#adjustModal select[name="adjustment_type"]').value;
+            if (adjustmentType === 'transfer') {
+                var source = document.querySelector('#adjustModal select[name="warehouse_id"]').value;
+                var destination = document.getElementById('destinationWarehouseId').value;
+                if (!destination || source === destination) {
+                    alert('Select a different destination warehouse.');
+                    return false;
+                }
+            }
             return true;
+        }
+
+        function toggleTransferWarehouse(select) {
+            var group = document.getElementById('destinationWarehouseGroup');
+            var destination = document.getElementById('destinationWarehouseId');
+            var visible = select.value === 'transfer';
+            group.style.display = visible ? 'block' : 'none';
+            destination.disabled = !visible;
+            destination.required = visible;
+            if (!visible) destination.value = '';
         }
 
         function closeAdjustModal() {
@@ -2116,7 +2509,8 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
                 'return': 'fa-undo'
             };
             
-            var typeColor = typeColors[transaction.transaction_type] || 'var(--text)';
+            var isOutMovement = transaction.transaction_type === 'issuance' || Number(transaction.new_balance) < Number(transaction.previous_balance);
+            var typeColor = isOutMovement ? '#DC2626' : (['receiving', 'return', 'transfer'].includes(transaction.transaction_type) ? 'var(--accent)' : (typeColors[transaction.transaction_type] || 'var(--text)'));
             var icon = typeIcon[transaction.transaction_type] || 'fa-circle';
             
             content.innerHTML = `
@@ -2145,7 +2539,7 @@ $stats = $stmt->fetch(PDO::FETCH_ASSOC);
                 <div class="detail-row">
                     <span class="label">Quantity</span>
                     <span class="value" style="color: ${transaction.transaction_type === 'receiving' ? 'var(--accent)' : '#DC2626'};">
-                        ${transaction.transaction_type === 'issuance' ? '-' : '+'} ${Number(transaction.quantity).toLocaleString()}
+                        ${isOutMovement ? '-' : '+'} ${Number(transaction.quantity).toLocaleString()}
                     </span>
                 </div>
                 <div class="detail-row">

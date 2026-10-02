@@ -72,6 +72,15 @@ $stats['pending_approvals'] = $stmt->fetch()['total'];
 $stmt = $pdo->query("SELECT COUNT(*) as total FROM users WHERE is_active = true AND is_archived = false");
 $stats['active_users'] = $stmt->fetch()['total'];
 
+$stmt = $pdo->query("SELECT COUNT(*) as total FROM shipments WHERE status IN ('pending', 'in_transit') AND is_archived = false");
+$stats['ongoing_shipments'] = $stmt->fetch()['total'];
+
+$stmt = $pdo->query("SELECT COUNT(*) as total FROM purchase_requisitions WHERE status = 'pending_review' AND is_archived = false");
+$stats['pending_requisitions'] = $stmt->fetch()['total'];
+
+$stmt = $pdo->query("SELECT COUNT(*) as total FROM purchase_requisitions WHERE status = 'rejected' AND is_archived = false");
+$stats['rejected_requisitions'] = $stmt->fetch()['total'];
+
 // Recent activity
 $stmt = $pdo->query("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 10");
 $recentActivity = $stmt->fetchAll();
@@ -88,6 +97,7 @@ $theme = $stmt->fetch()['setting_value'] ?? 'light';
     <title>Admin Dashboard - GlobalSCM</title>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
             --primary: <?php echo COLOR_PRIMARY; ?>;
@@ -132,6 +142,106 @@ $theme = $stmt->fetch()['setting_value'] ?? 'light';
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
             gap: 20px;
             margin-bottom: 30px;
+        }
+
+        .analytics-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .analytics-card {
+            min-width: 0;
+            padding: 22px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        .analytics-card-wide {
+            grid-column: 1 / -1;
+        }
+
+        .analytics-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+
+        .analytics-header h2 {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .analytics-source,
+        .dashboard-updated {
+            color: var(--secondary-text);
+            font-size: 12px;
+        }
+
+        .analytics-source {
+            display: inline-block;
+            margin-top: 3px;
+        }
+
+        .chart-plot {
+            position: relative;
+            height: 280px;
+        }
+
+        .analytics-card-wide .chart-plot {
+            height: 390px;
+        }
+
+        .supplier-status-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 18px;
+            margin-top: 12px;
+            list-style: none;
+            font-size: 13px;
+        }
+
+        .supplier-status-list li {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+        }
+
+        .supplier-status-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+        }
+
+        .pyramid-chart {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+            min-height: 280px;
+            padding: 10px 0;
+        }
+
+        .pyramid-level {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            min-height: 42px;
+            padding: 0 18px;
+            color: #fff;
+            font-size: 12px;
+            font-weight: 600;
+            clip-path: polygon(7% 0, 93% 0, 100% 100%, 0 100%);
+        }
+
+        .pyramid-empty {
+            color: var(--secondary-text);
+            padding: 30px 0;
         }
         
         .stat-card {
@@ -320,6 +430,22 @@ $theme = $stmt->fetch()['setting_value'] ?? 'light';
             .stats-grid {
                 grid-template-columns: 1fr 1fr;
             }
+
+            .analytics-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .analytics-card-wide {
+                grid-column: auto;
+            }
+
+            .chart-plot {
+                height: 250px;
+            }
+
+            .analytics-card-wide .chart-plot {
+                height: 360px;
+            }
         }
     </style>
 </head>
@@ -365,25 +491,101 @@ $theme = $stmt->fetch()['setting_value'] ?? 'light';
                 <div class="stat-card">
                     <i class="fas fa-users icon"></i>
                     <div class="label">Total Users</div>
-                    <div class="value"><?php echo $stats['users']; ?></div>
+                    <div class="value" data-live-stat="users"><?php echo $stats['users']; ?></div>
                 </div>
                 <div class="stat-card">
                     <i class="fas fa-user-check icon"></i>
                     <div class="label">Active Users</div>
-                    <div class="value"><?php echo $stats['active_users']; ?></div>
+                    <div class="value" data-live-stat="active_users"><?php echo $stats['active_users']; ?></div>
                 </div>
                 <div class="stat-card">
                     <i class="fas fa-box icon"></i>
                     <div class="label">Products</div>
-                    <div class="value"><?php echo $stats['products']; ?></div>
+                    <div class="value" data-live-stat="products"><?php echo $stats['products']; ?></div>
                 </div>
                 <div class="stat-card">
                     <i class="fas fa-clock icon"></i>
                     <div class="label">Pending Approvals</div>
                     <div class="value" style="color: <?php echo $stats['pending_approvals'] > 0 ? '#DC2626' : 'var(--accent)'; ?>;">
-                        <?php echo $stats['pending_approvals']; ?>
+                        <span data-live-stat="pending_approvals"><?php echo $stats['pending_approvals']; ?></span>
                     </div>
                 </div>
+                <div class="stat-card">
+                    <i class="fas fa-truck icon"></i>
+                    <div class="label">Total Suppliers</div>
+                    <div class="value" data-live-stat="suppliers"><?php echo $stats['suppliers']; ?></div>
+                </div>
+                <div class="stat-card">
+                    <i class="fas fa-ship icon"></i>
+                    <div class="label">Ongoing Shipments</div>
+                    <div class="value" data-live-stat="ongoing_shipments"><?php echo $stats['ongoing_shipments']; ?></div>
+                </div>
+                <div class="stat-card">
+                    <i class="fas fa-clipboard-list icon"></i>
+                    <div class="label">Pending Requisitions</div>
+                    <div class="value" data-live-stat="pending_requisitions"><?php echo $stats['pending_requisitions']; ?></div>
+                </div>
+                <div class="stat-card">
+                    <i class="fas fa-circle-xmark icon"></i>
+                    <div class="label">Rejected Requisitions</div>
+                    <div class="value" data-live-stat="rejected_requisitions"><?php echo $stats['rejected_requisitions']; ?></div>
+                </div>
+            </div>
+
+            <div class="analytics-grid">
+                <section class="analytics-card analytics-card-wide">
+                    <div class="analytics-header">
+                        <div>
+                            <h2>All-Module Summary</h2>
+                            <span class="analytics-source">Operational, reporting, settings, and archive records</span>
+                        </div>
+                        <span class="dashboard-updated" id="dashboardUpdated">Loading live data...</span>
+                    </div>
+                    <div class="chart-plot"><canvas id="moduleSummaryChart"></canvas></div>
+                </section>
+
+                <section class="analytics-card">
+                    <div class="analytics-header">
+                        <div>
+                            <h2>Inventory Value by Category</h2>
+                            <span class="analytics-source">products: category × unit price × current stock</span>
+                        </div>
+                    </div>
+                    <div class="chart-plot"><canvas id="inventoryCategoryChart"></canvas></div>
+                </section>
+
+                <section class="analytics-card">
+                    <div class="analytics-header">
+                        <div>
+                            <h2>Supplier Status</h2>
+                            <span class="analytics-source">suppliers: status counts</span>
+                        </div>
+                    </div>
+                    <div class="chart-plot"><canvas id="supplierStatusChart"></canvas></div>
+                    <ul class="supplier-status-list" id="supplierStatusList"></ul>
+                </section>
+
+                <section class="analytics-card">
+                    <div class="analytics-header">
+                        <div>
+                            <h2>Stock Movement</h2>
+                            <span class="analytics-source">inventory_transactions: received and issued, last 7 days</span>
+                        </div>
+                    </div>
+                    <div class="chart-plot"><canvas id="stockMovementChart"></canvas></div>
+                </section>
+
+                <section class="analytics-card">
+                    <div class="analytics-header">
+                        <div>
+                            <h2>Requisition Status Pyramid</h2>
+                            <span class="analytics-source">purchase_requisitions: status counts, sorted by volume</span>
+                        </div>
+                    </div>
+                    <div class="pyramid-chart" id="requisitionPyramid" aria-live="polite">
+                        <span class="pyramid-empty">Loading requisition status...</span>
+                    </div>
+                </section>
             </div>
             
             <!-- Dashboard Grid -->
@@ -455,6 +657,156 @@ $theme = $stmt->fetch()['setting_value'] ?? 'light';
             </div>
         </main>
     </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            var chartColors = ['#2F80ED', '#27AE60', '#F59E0B', '#DC2626', '#56CCF2', '#7C3AED', '#EC4899', '#6B7280', '#0F766E'];
+            var chartFont = { family: 'Poppins, sans-serif' };
+            var moduleCanvas = document.getElementById('moduleSummaryChart');
+            var categoryCanvas = document.getElementById('inventoryCategoryChart');
+            var supplierCanvas = document.getElementById('supplierStatusChart');
+            var movementCanvas = document.getElementById('stockMovementChart');
+            var moduleChart = null;
+            var categoryChart = null;
+            var supplierChart = null;
+            var movementChart = null;
+
+            if (window.Chart) {
+                moduleChart = new Chart(moduleCanvas, {
+                    type: 'bar',
+                    data: { labels: [], datasets: [{ label: 'Records', data: [], backgroundColor: '#2F80ED', borderRadius: 4 }] },
+                    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { bodyFont: chartFont } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } }, y: { ticks: { font: chartFont } } } }
+                });
+                categoryChart = new Chart(categoryCanvas, {
+                    type: 'pie',
+                    data: { labels: [], datasets: [{ data: [], backgroundColor: chartColors, borderColor: '#FFFFFF', borderWidth: 2 }] },
+                    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: chartFont } } } }
+                });
+                supplierChart = new Chart(supplierCanvas, {
+                    type: 'doughnut',
+                    data: { labels: [], datasets: [{ data: [], backgroundColor: chartColors, borderColor: '#FFFFFF', borderWidth: 2 }] },
+                    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: chartFont } } } }
+                });
+                movementChart = new Chart(movementCanvas, {
+                    type: 'line',
+                    data: { labels: [], datasets: [
+                        { label: 'Received', data: [], borderColor: '#27AE60', backgroundColor: 'rgba(39,174,96,.14)', fill: true, tension: .3 },
+                        { label: 'Issued', data: [], borderColor: '#DC2626', backgroundColor: 'rgba(220,38,38,.10)', fill: true, tension: .3 }
+                    ] },
+                    options: { responsive: true, maintainAspectRatio: false, interaction: { intersect: false, mode: 'index' }, plugins: { legend: { position: 'bottom', labels: { font: chartFont } } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
+                });
+            }
+
+            function updateRequisitionPyramid(statusRows) {
+                var labels = {
+                    draft: 'Draft',
+                    pending_review: 'Pending Review',
+                    approved: 'Approved',
+                    rejected: 'Rejected',
+                    converted_to_po: 'Converted to PO'
+                };
+                var colors = ['#2F80ED', '#56CCF2', '#27AE60', '#DC2626', '#F59E0B'];
+                var counts = {};
+                statusRows.forEach(function(row) {
+                    counts[String(row.status || 'draft').toLowerCase()] = Number(row.total) || 0;
+                });
+
+                var levels = Object.keys(labels).map(function(key) {
+                    return { key: key, label: labels[key], count: counts[key] || 0 };
+                }).sort(function(a, b) { return b.count - a.count; });
+                var maximum = Math.max(1, ...levels.map(function(level) { return level.count; }));
+                var container = document.getElementById('requisitionPyramid');
+                container.textContent = '';
+
+                levels.forEach(function(level, index) {
+                    var row = document.createElement('div');
+                    row.className = 'pyramid-level';
+                    row.style.width = Math.max(60, (level.count / maximum) * 100) + '%';
+                    row.style.backgroundColor = colors[index % colors.length];
+
+                    var label = document.createElement('span');
+                    label.textContent = level.label;
+                    var value = document.createElement('span');
+                    value.textContent = level.count.toLocaleString();
+                    row.appendChild(label);
+                    row.appendChild(value);
+                    container.appendChild(row);
+                });
+            }
+
+            function updateSupplierStatus(statusRows) {
+                var labels = statusRows.map(function(row) {
+                    return String(row.status || 'Unknown').replace(/_/g, ' ').replace(/\b\w/g, function(letter) { return letter.toUpperCase(); });
+                });
+                var values = statusRows.map(function(row) { return Number(row.total) || 0; });
+                if (supplierChart) {
+                    supplierChart.data.labels = labels;
+                    supplierChart.data.datasets[0].data = values;
+                    supplierChart.update('none');
+                }
+
+                var list = document.getElementById('supplierStatusList');
+                list.textContent = '';
+                statusRows.forEach(function(row, index) {
+                    var item = document.createElement('li');
+                    var dot = document.createElement('span');
+                    dot.className = 'supplier-status-dot';
+                    dot.style.backgroundColor = chartColors[index % chartColors.length];
+                    var text = document.createElement('span');
+                    text.textContent = (labels[index] || 'Unknown') + ': ' + (Number(row.total) || 0).toLocaleString();
+                    item.appendChild(dot);
+                    item.appendChild(text);
+                    list.appendChild(item);
+                });
+            }
+
+            function refreshDashboard() {
+                fetch('../api/dashboard.php', { credentials: 'same-origin', cache: 'no-store' })
+                    .then(function(response) {
+                        if (!response.ok) throw new Error('Dashboard data request failed');
+                        return response.json();
+                    })
+                    .then(function(data) {
+                        if (!data.success) throw new Error(data.error || 'Dashboard data unavailable');
+
+                        document.querySelectorAll('[data-live-stat]').forEach(function(element) {
+                            var key = element.dataset.liveStat;
+                            if (Object.prototype.hasOwnProperty.call(data.stats, key)) {
+                                element.textContent = Number(data.stats[key]).toLocaleString();
+                            }
+                        });
+
+                        if (moduleChart) {
+                            moduleChart.data.labels = data.module_counts.map(function(item) { return item.label; });
+                            moduleChart.data.datasets[0].data = data.module_counts.map(function(item) { return Number(item.total) || 0; });
+                            moduleChart.update('none');
+                        }
+                        if (categoryChart) {
+                            categoryChart.data.labels = data.inventory_categories.map(function(item) { return item.category; });
+                            categoryChart.data.datasets[0].data = data.inventory_categories.map(function(item) { return Number(item.total_value) || 0; });
+                            categoryChart.update('none');
+                        }
+                        if (movementChart) {
+                            movementChart.data.labels = data.stock_movements.map(function(item) { return item.date; });
+                            movementChart.data.datasets[0].data = data.stock_movements.map(function(item) { return Number(item.received) || 0; });
+                            movementChart.data.datasets[1].data = data.stock_movements.map(function(item) { return Number(item.issued) || 0; });
+                            movementChart.update('none');
+                        }
+
+                        updateSupplierStatus(data.supplier_status || []);
+                        updateRequisitionPyramid(data.requisition_status || []);
+                        document.getElementById('dashboardUpdated').textContent = 'Updated ' + new Date(data.updated_at).toLocaleTimeString();
+                    })
+                    .catch(function(error) {
+                        console.error(error);
+                        document.getElementById('dashboardUpdated').textContent = 'Live data unavailable';
+                    });
+            }
+
+            refreshDashboard();
+            window.setInterval(refreshDashboard, 30000);
+        });
+    </script>
     
 </body>
 </html>

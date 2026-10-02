@@ -16,6 +16,8 @@ if (!defined('COLOR_SECONDARY_TEXT')) define('COLOR_SECONDARY_TEXT', '#6B7280');
 if (!defined('COLOR_BORDER')) define('COLOR_BORDER', '#EEF2F7');
 
 $action = isset($_GET['action']) ? $_GET['action'] : 'list';
+$privacyAcknowledgementVersion = '2026-10-02-v1';
+$privacyAcknowledgementText = 'I acknowledge that the personal data provided for supplier registration will be recorded and processed for supplier evaluation, procurement communications, transactions, and logistics records, subject to the organization privacy notice and applicable law, including Republic Act No. 10173.';
 
 // Get theme setting
 $theme = getTheme();
@@ -25,10 +27,17 @@ $theme = getTheme();
 // ============================================
 if ($action === 'export' && isset($_GET['format'])) {
     $format = $_GET['format'];
+    $search = isset($_GET['search']) ? trim($_GET['search']) : '';
+    $statusFilter = isset($_GET['status']) ? trim($_GET['status']) : '';
+    $supplierTypeFilter = isset($_GET['supplier_type']) ? trim($_GET['supplier_type']) : '';
+    $ratingFilter = isset($_GET['rating']) ? (float)$_GET['rating'] : 0;
+    $itemTypeFilter = isset($_GET['item_type']) ? trim($_GET['item_type']) : '';
     
     try {
-        $query = "SELECT s.*, 
-                  (SELECT AVG((on_time_delivery + quality_rate + response_time)/3) FROM supplier_performance WHERE supplier_id = s.id) as avg_score
+        $query = "SELECT s.*,
+              (SELECT AVG((on_time_delivery + quality_rate + response_time)/3) FROM supplier_performance WHERE supplier_id = s.id) as avg_score,
+              (SELECT spa.acknowledged_by FROM supplier_privacy_acknowledgements spa WHERE spa.supplier_id = s.id ORDER BY spa.id DESC LIMIT 1) AS privacy_acknowledged_by,
+              (SELECT spa.acknowledged_at FROM supplier_privacy_acknowledgements spa WHERE spa.supplier_id = s.id ORDER BY spa.id DESC LIMIT 1) AS privacy_acknowledged_at
                   FROM suppliers s 
                   WHERE s.is_archived = 0";
         $params = [];
@@ -40,12 +49,31 @@ if ($action === 'export' && isset($_GET['format'])) {
             $params[] = $searchParam;
             $params[] = $searchParam;
         }
+        if ($statusFilter !== '') {
+            $query .= ' AND s.status = ?';
+            $params[] = $statusFilter;
+        }
+        if ($supplierTypeFilter !== '') {
+            $query .= ' AND s.supplier_type = ?';
+            $params[] = $supplierTypeFilter;
+        }
+        if ($ratingFilter > 0) {
+            $query .= ' AND s.rating >= ?';
+            $params[] = $ratingFilter;
+        }
+        if ($itemTypeFilter !== '') {
+            $query .= " AND EXISTS (SELECT 1 FROM purchase_orders po JOIN purchase_order_items poi ON poi.po_id = po.id JOIN products p ON p.id = poi.product_id WHERE po.supplier_id = s.id AND po.is_archived = 0 AND p.item_type = ?)";
+            $params[] = $itemTypeFilter;
+        }
         
         $query .= " ORDER BY s.company_name";
         
         $stmt = $pdo->prepare($query);
         $stmt->execute($params);
         $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        require_once __DIR__ . '/../includes/report_export.php';
+        exportTrackedReport($pdo, (int)$_SESSION['user_id'], 'suppliers', 'Supplier Register', $format, $data);
         
         if ($format === 'csv') {
             header('Content-Type: text/csv');
@@ -106,6 +134,61 @@ if ($action === 'export' && isset($_GET['format'])) {
     }
 }
 
+if ($action === 'supply_report' && isset($_GET['format'])) {
+    $format = strtolower(trim((string)$_GET['format']));
+    $statusFilter = isset($_GET['status']) ? trim($_GET['status']) : '';
+    $supplierTypeFilter = isset($_GET['supplier_type']) ? trim($_GET['supplier_type']) : '';
+    $itemTypeFilter = isset($_GET['item_type']) ? trim($_GET['item_type']) : '';
+    $search = isset($_GET['search']) ? trim($_GET['search']) : '';
+
+    $query = "SELECT s.supplier_code, s.company_name AS supplier, s.supplier_type, po.po_number,
+                     p.sku, p.product_name, p.item_type, poi.quantity AS ordered_quantity,
+                     CASE WHEN b.id IS NOT NULL THEN b.received_quantity
+                         WHEN poi.received_quantity > 0 THEN poi.received_quantity
+                         WHEN po.status = 'received' THEN poi.quantity ELSE 0 END AS received_quantity,
+                     COALESCE(NULLIF(b.brand_snapshot, ''), p.brand, '') AS brand,
+                     COALESCE(b.batch_number, '') AS batch_number,
+                     COALESCE(b.quality_status, 'not_recorded') AS quality_status,
+                     COALESCE(b.quality_notes, '') AS quality_notes, b.expiry_date
+              FROM suppliers s
+              JOIN purchase_orders po ON po.supplier_id = s.id
+              JOIN purchase_order_items poi ON poi.po_id = po.id
+              JOIN products p ON p.id = poi.product_id
+              LEFT JOIN inventory_batches b ON b.po_item_id = poi.id AND b.origin_batch_id IS NULL
+              WHERE s.is_archived = 0 AND po.is_archived = 0";
+    $params = [];
+    if ($statusFilter !== '') {
+        $query .= ' AND s.status = ?';
+        $params[] = $statusFilter;
+    }
+    if ($supplierTypeFilter !== '') {
+        $query .= ' AND s.supplier_type = ?';
+        $params[] = $supplierTypeFilter;
+    }
+    if ($itemTypeFilter !== '') {
+        $query .= ' AND p.item_type = ?';
+        $params[] = $itemTypeFilter;
+    }
+    if ($search !== '') {
+        $query .= ' AND (s.company_name LIKE ? OR s.supplier_code LIKE ? OR p.product_name LIKE ? OR p.sku LIKE ?)';
+        $searchParam = '%' . $search . '%';
+        array_push($params, $searchParam, $searchParam, $searchParam, $searchParam);
+    }
+    $query .= ' ORDER BY s.company_name, p.item_type, p.product_name, po.created_at DESC, b.received_at';
+
+    try {
+        $stmt = $pdo->prepare($query);
+        $stmt->execute($params);
+        $supplyRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        require_once __DIR__ . '/../includes/report_export.php';
+        exportTrackedReport($pdo, (int)$_SESSION['user_id'], 'supplier_supply_history', 'Supplier Supply History', $format, $supplyRows);
+    } catch (PDOException $e) {
+        $_SESSION['error'] = 'Supplier supply report failed: ' . $e->getMessage();
+        header('Location: suppliers.php');
+        exit();
+    }
+}
+
 // ============================================
 // BULK IMPORT
 // ============================================
@@ -125,10 +208,17 @@ if ($action === 'import' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 while (($row = fgetcsv($handle)) !== false) {
                     $data = array_combine($headers, $row);
                     if (!empty($data['code']) && !empty($data['company'])) {
-                        $stmt = $pdo->prepare("INSERT INTO suppliers (supplier_code, company_name, contact_person, email, phone, address, tax_id, payment_terms, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        $acknowledged = strtolower(trim((string)($data['privacy_acknowledged'] ?? '')));
+                        $acknowledgedBy = trim((string)($data['privacy_acknowledged_by'] ?? ''));
+                        if (!in_array($acknowledged, ['1', 'yes', 'true'], true) || $acknowledgedBy === '') {
+                            throw new RuntimeException('Each imported supplier must include privacy_acknowledged=yes and privacy_acknowledged_by.');
+                        }
+                        $pdo->beginTransaction();
+                        $stmt = $pdo->prepare("INSERT INTO suppliers (supplier_code, company_name, supplier_type, contact_person, email, phone, address, tax_id, payment_terms, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                         $stmt->execute([
                             $data['code'],
                             $data['company'],
+                            trim((string)($data['supplier_type'] ?? 'general')) ?: 'general',
                             $data['contact'] ?? '',
                             $data['email'] ?? '',
                             $data['phone'] ?? '',
@@ -138,6 +228,10 @@ if ($action === 'import' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                             $data['status'] ?? 'active',
                             $_SESSION['user_id']
                         ]);
+                        $supplierId = (int)$pdo->lastInsertId();
+                        $ackStmt = $pdo->prepare('INSERT INTO supplier_privacy_acknowledgements (supplier_id, acknowledged_by, acknowledgement_text, policy_version, recorded_by) VALUES (?, ?, ?, ?, ?)');
+                        $ackStmt->execute([$supplierId, $acknowledgedBy, $privacyAcknowledgementText, $privacyAcknowledgementVersion, $_SESSION['user_id']]);
+                        $pdo->commit();
                         $imported++;
                     }
                 }
@@ -146,7 +240,8 @@ if ($action === 'import' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             
             logAudit($_SESSION['user_id'], 'import_suppliers', 'supplier', "Imported $imported suppliers");
             $_SESSION['success'] = "Successfully imported $imported suppliers!";
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
             $_SESSION['error'] = "Import failed: " . $e->getMessage();
         }
     } else {
@@ -162,6 +257,8 @@ if ($action === 'import' && $_SERVER['REQUEST_METHOD'] === 'POST') {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $supplier_code = isset($_POST['supplier_code']) ? trim($_POST['supplier_code']) : '';
     $company_name = isset($_POST['company_name']) ? trim($_POST['company_name']) : '';
+    $supplier_type = trim((string)($_POST['supplier_type'] ?? ''));
+    $privacyAcknowledgedBy = trim((string)($_POST['privacy_acknowledged_by'] ?? ''));
     $contact_person = isset($_POST['contact_person']) ? trim($_POST['contact_person']) : '';
     $email = isset($_POST['email']) ? trim($_POST['email']) : '';
     $phone = isset($_POST['phone']) ? trim($_POST['phone']) : '';
@@ -173,16 +270,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $errors = [];
     if (empty($supplier_code)) $errors[] = 'Supplier code is required';
     if (empty($company_name)) $errors[] = 'Company name is required';
+    if ($supplier_type === '') $errors[] = 'Supplier type is required';
+    if (($_POST['privacy_acknowledged'] ?? '') !== '1') $errors[] = 'The supplier acknowledgement is required.';
+    if ($privacyAcknowledgedBy === '') $errors[] = 'Name of the acknowledging supplier representative is required.';
     
     if (empty($errors)) {
         try {
-            $stmt = $pdo->prepare("INSERT INTO suppliers (supplier_code, company_name, contact_person, email, phone, address, tax_id, bank_details, payment_terms, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$supplier_code, $company_name, $contact_person, $email, $phone, $address, $tax_id, $bank_details, $payment_terms, $_SESSION['user_id']]);
+            $pdo->beginTransaction();
+            $stmt = $pdo->prepare("INSERT INTO suppliers (supplier_code, company_name, supplier_type, contact_person, email, phone, address, tax_id, bank_details, payment_terms, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$supplier_code, $company_name, $supplier_type, $contact_person, $email, $phone, $address, $tax_id, $bank_details, $payment_terms, $_SESSION['user_id']]);
+            $supplierId = (int)$pdo->lastInsertId();
+            $ackStmt = $pdo->prepare('INSERT INTO supplier_privacy_acknowledgements (supplier_id, acknowledged_by, acknowledgement_text, policy_version, recorded_by) VALUES (?, ?, ?, ?, ?)');
+            $ackStmt->execute([$supplierId, $privacyAcknowledgedBy, $privacyAcknowledgementText, $privacyAcknowledgementVersion, $_SESSION['user_id']]);
+            $pdo->commit();
             logAudit($_SESSION['user_id'], 'create_supplier', 'supplier', "Created supplier: $company_name");
             $_SESSION['success'] = "Supplier created successfully!";
             header('Location: suppliers.php');
             exit();
         } catch (PDOException $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            $error = "Error creating supplier: " . $e->getMessage();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
             $error = "Error creating supplier: " . $e->getMessage();
         }
     } else {
@@ -197,6 +306,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'edit') {
     $id = isset($_POST['id']) ? (int)$_POST['id'] : 0;
     $supplier_code = isset($_POST['supplier_code']) ? trim($_POST['supplier_code']) : '';
     $company_name = isset($_POST['company_name']) ? trim($_POST['company_name']) : '';
+    $supplier_type = trim((string)($_POST['supplier_type'] ?? ''));
+    $privacyAcknowledgedBy = trim((string)($_POST['privacy_acknowledged_by'] ?? ''));
     $contact_person = isset($_POST['contact_person']) ? trim($_POST['contact_person']) : '';
     $email = isset($_POST['email']) ? trim($_POST['email']) : '';
     $phone = isset($_POST['phone']) ? trim($_POST['phone']) : '';
@@ -207,13 +318,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'edit') {
     $status = isset($_POST['status']) ? $_POST['status'] : 'active';
     
     try {
-        $stmt = $pdo->prepare("UPDATE suppliers SET supplier_code = ?, company_name = ?, contact_person = ?, email = ?, phone = ?, address = ?, tax_id = ?, bank_details = ?, payment_terms = ?, status = ? WHERE id = ?");
-        $stmt->execute([$supplier_code, $company_name, $contact_person, $email, $phone, $address, $tax_id, $bank_details, $payment_terms, $status, $id]);
+        if ($supplier_type === '') throw new RuntimeException('Supplier type is required.');
+        $latestAck = $pdo->prepare('SELECT id FROM supplier_privacy_acknowledgements WHERE supplier_id = ? ORDER BY id DESC LIMIT 1');
+        $latestAck->execute([$id]);
+        $hasAcknowledgement = (bool)$latestAck->fetchColumn();
+        $renewAcknowledgement = ($_POST['privacy_acknowledged'] ?? '') === '1';
+        if (!$hasAcknowledgement && !$renewAcknowledgement) throw new RuntimeException('Record the supplier acknowledgement before updating this supplier.');
+        if ($renewAcknowledgement && $privacyAcknowledgedBy === '') throw new RuntimeException('Name of the acknowledging supplier representative is required.');
+
+        $pdo->beginTransaction();
+        $stmt = $pdo->prepare("UPDATE suppliers SET supplier_code = ?, company_name = ?, supplier_type = ?, contact_person = ?, email = ?, phone = ?, address = ?, tax_id = ?, bank_details = ?, payment_terms = ?, status = ? WHERE id = ?");
+        $stmt->execute([$supplier_code, $company_name, $supplier_type, $contact_person, $email, $phone, $address, $tax_id, $bank_details, $payment_terms, $status, $id]);
+        if ($renewAcknowledgement) {
+            $ackStmt = $pdo->prepare('INSERT INTO supplier_privacy_acknowledgements (supplier_id, acknowledged_by, acknowledgement_text, policy_version, recorded_by) VALUES (?, ?, ?, ?, ?)');
+            $ackStmt->execute([$id, $privacyAcknowledgedBy, $privacyAcknowledgementText, $privacyAcknowledgementVersion, $_SESSION['user_id']]);
+        }
+        $pdo->commit();
         logAudit($_SESSION['user_id'], 'update_supplier', 'supplier', "Updated supplier: $company_name");
         $_SESSION['success'] = "Supplier updated successfully!";
         header('Location: suppliers.php');
         exit();
     } catch (PDOException $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $error = "Error updating supplier: " . $e->getMessage();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
         $error = "Error updating supplier: " . $e->getMessage();
     }
 }
@@ -323,6 +452,8 @@ if ($action === 'delete' && isset($_GET['id'])) {
 $showArchived = isset($_GET['archived']) ? 1 : 0;
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $statusFilter = isset($_GET['status']) ? $_GET['status'] : '';
+$supplierTypeFilter = isset($_GET['supplier_type']) ? trim($_GET['supplier_type']) : '';
+$itemTypeFilter = isset($_GET['item_type']) ? trim($_GET['item_type']) : '';
 $ratingFilter = isset($_GET['rating']) ? (float)$_GET['rating'] : '';
 $sortField = isset($_GET['sort']) ? $_GET['sort'] : 'company_name';
 $sortOrder = isset($_GET['order']) && $_GET['order'] === 'asc' ? 'ASC' : 'DESC';
@@ -333,8 +464,10 @@ if (!in_array($sortField, $allowedSortFields)) {
 }
 
 try {
-    $query = "SELECT s.*, 
-              (SELECT AVG((on_time_delivery + quality_rate + response_time)/3) FROM supplier_performance WHERE supplier_id = s.id) as avg_score
+    $query = "SELECT s.*,
+              (SELECT AVG((on_time_delivery + quality_rate + response_time)/3) FROM supplier_performance WHERE supplier_id = s.id) as avg_score,
+              (SELECT spa.acknowledged_by FROM supplier_privacy_acknowledgements spa WHERE spa.supplier_id = s.id ORDER BY spa.id DESC LIMIT 1) AS privacy_acknowledged_by,
+              (SELECT spa.acknowledged_at FROM supplier_privacy_acknowledgements spa WHERE spa.supplier_id = s.id ORDER BY spa.id DESC LIMIT 1) AS privacy_acknowledged_at
               FROM suppliers s 
               WHERE s.is_archived = ?";
     $params = [$showArchived];
@@ -350,6 +483,16 @@ try {
     if (!empty($statusFilter)) {
         $query .= " AND s.status = ?";
         $params[] = $statusFilter;
+    }
+
+    if ($supplierTypeFilter !== '') {
+        $query .= ' AND s.supplier_type = ?';
+        $params[] = $supplierTypeFilter;
+    }
+
+    if ($itemTypeFilter !== '') {
+        $query .= " AND EXISTS (SELECT 1 FROM purchase_orders po JOIN purchase_order_items poi ON poi.po_id = po.id JOIN products p ON p.id = poi.product_id WHERE po.supplier_id = s.id AND po.is_archived = 0 AND p.item_type = ?)";
+        $params[] = $itemTypeFilter;
     }
     
     if (!empty($ratingFilter)) {
@@ -367,6 +510,19 @@ try {
     $error = "Error fetching suppliers: " . $e->getMessage();
 }
 
+try {
+    $supplierTypeStmt = $pdo->query("SELECT DISTINCT supplier_type FROM suppliers WHERE supplier_type IS NOT NULL AND supplier_type <> '' ORDER BY supplier_type");
+    $supplierTypes = $supplierTypeStmt->fetchAll(PDO::FETCH_COLUMN);
+} catch (PDOException $e) {
+    $supplierTypes = [];
+}
+try {
+    $itemTypeStmt = $pdo->query("SELECT DISTINCT item_type FROM products WHERE item_type IS NOT NULL AND item_type <> '' ORDER BY item_type");
+    $supplierItemTypes = $itemTypeStmt->fetchAll(PDO::FETCH_COLUMN);
+} catch (PDOException $e) {
+    $supplierItemTypes = [];
+}
+
 // ============================================
 // GET SUPPLIER FOR EDIT
 // ============================================
@@ -376,6 +532,13 @@ if ($action === 'edit' && isset($_GET['id'])) {
         $stmt = $pdo->prepare("SELECT * FROM suppliers WHERE id = ?");
         $stmt->execute([$_GET['id']]);
         $editSupplier = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($editSupplier) {
+            $ackStmt = $pdo->prepare('SELECT acknowledged_by, acknowledged_at FROM supplier_privacy_acknowledgements WHERE supplier_id = ? ORDER BY id DESC LIMIT 1');
+            $ackStmt->execute([$editSupplier['id']]);
+            $acknowledgement = $ackStmt->fetch(PDO::FETCH_ASSOC);
+            $editSupplier['privacy_acknowledged_by'] = $acknowledgement['acknowledged_by'] ?? null;
+            $editSupplier['privacy_acknowledged_at'] = $acknowledgement['acknowledged_at'] ?? null;
+        }
     } catch (PDOException $e) {
         $error = "Error fetching supplier: " . $e->getMessage();
     }
@@ -967,9 +1130,10 @@ $paginatedSuppliers = array_slice($suppliers, $offset, $itemsPerPage);
                     <a href="suppliers.php?action=create" class="btn btn-primary" onclick="openCreateModal()">
                         <i class="fas fa-plus"></i> Add Supplier
                     </a>
-                    <a href="suppliers.php?action=export&format=csv" class="btn btn-outline">
-                        <i class="fas fa-download"></i> Export
-                    </a>
+                    <a href="suppliers.php?action=export&amp;format=pdf&amp;status=<?php echo urlencode($statusFilter); ?>&amp;supplier_type=<?php echo urlencode($supplierTypeFilter); ?>&amp;item_type=<?php echo urlencode($itemTypeFilter); ?>&amp;rating=<?php echo urlencode((string)$ratingFilter); ?>&amp;search=<?php echo urlencode($search); ?>" class="btn btn-outline"><i class="fas fa-file-pdf"></i> Supplier PDF</a>
+                    <a href="suppliers.php?action=export&amp;format=excel&amp;status=<?php echo urlencode($statusFilter); ?>&amp;supplier_type=<?php echo urlencode($supplierTypeFilter); ?>&amp;item_type=<?php echo urlencode($itemTypeFilter); ?>&amp;rating=<?php echo urlencode((string)$ratingFilter); ?>&amp;search=<?php echo urlencode($search); ?>" class="btn btn-outline"><i class="fas fa-file-excel"></i> Supplier Excel</a>
+                    <a href="suppliers.php?action=supply_report&amp;format=pdf&amp;status=<?php echo urlencode($statusFilter); ?>&amp;supplier_type=<?php echo urlencode($supplierTypeFilter); ?>&amp;item_type=<?php echo urlencode($itemTypeFilter); ?>&amp;search=<?php echo urlencode($search); ?>" class="btn btn-outline" title="Export supplier sourcing history as a tracked PDF"><i class="fas fa-file-pdf"></i> Supply PDF</a>
+                    <a href="suppliers.php?action=supply_report&amp;format=excel&amp;status=<?php echo urlencode($statusFilter); ?>&amp;supplier_type=<?php echo urlencode($supplierTypeFilter); ?>&amp;item_type=<?php echo urlencode($itemTypeFilter); ?>&amp;search=<?php echo urlencode($search); ?>" class="btn btn-outline" title="Export supplier sourcing history as a tracked Excel report"><i class="fas fa-file-excel"></i> Supply Excel</a>
                     <a href="suppliers.php<?php echo $showArchived ? '' : '?archived=1'; ?>" class="btn btn-outline">
                         <i class="fas fa-archive"></i> <?php echo $showArchived ? 'Active' : 'Archived'; ?>
                     </a>
@@ -1046,6 +1210,20 @@ $paginatedSuppliers = array_slice($suppliers, $offset, $itemsPerPage);
                         <option value="inactive" <?php echo $statusFilter === 'inactive' ? 'selected' : ''; ?>>Inactive</option>
                         <option value="suspended" <?php echo $statusFilter === 'suspended' ? 'selected' : ''; ?>>Suspended</option>
                     </select>
+
+                    <select name="supplier_type">
+                        <option value="">All Supplier Types</option>
+                        <?php foreach ($supplierTypes as $supplierType): ?>
+                        <option value="<?php echo htmlspecialchars($supplierType); ?>" <?php echo $supplierTypeFilter === $supplierType ? 'selected' : ''; ?>><?php echo htmlspecialchars(ucfirst(str_replace('_', ' ', $supplierType))); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+
+                    <select name="item_type">
+                        <option value="">All Supplied Item Types</option>
+                        <?php foreach ($supplierItemTypes as $supplierItemType): ?>
+                        <option value="<?php echo htmlspecialchars($supplierItemType); ?>" <?php echo $itemTypeFilter === $supplierItemType ? 'selected' : ''; ?>><?php echo htmlspecialchars(ucfirst(str_replace('_', ' ', $supplierItemType))); ?></option>
+                        <?php endforeach; ?>
+                    </select>
                     
                     <select name="rating">
                         <option value="">All Ratings</option>
@@ -1058,7 +1236,7 @@ $paginatedSuppliers = array_slice($suppliers, $offset, $itemsPerPage);
                         <button type="submit" class="btn btn-primary">
                             <i class="fas fa-search"></i> Filter
                         </button>
-                        <?php if (!empty($search) || !empty($statusFilter) || !empty($ratingFilter)): ?>
+                        <?php if (!empty($search) || !empty($statusFilter) || !empty($supplierTypeFilter) || !empty($itemTypeFilter) || !empty($ratingFilter)): ?>
                         <a href="suppliers.php<?php echo $showArchived ? '?archived=1' : ''; ?>" class="btn btn-outline">
                             <i class="fas fa-times"></i> Clear
                         </a>
@@ -1085,6 +1263,7 @@ $paginatedSuppliers = array_slice($suppliers, $offset, $itemsPerPage);
                                 <th onclick="sortTable('company_name')" class="<?php echo $sortField === 'company_name' ? 'sorted' : ''; ?>">
                                     Company <span class="sort-icon"><?php echo $sortField === 'company_name' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                 </th>
+                                <th>Supplier Type</th>
                                 <th onclick="sortTable('contact_person')" class="<?php echo $sortField === 'contact_person' ? 'sorted' : ''; ?>">
                                     Contact <span class="sort-icon"><?php echo $sortField === 'contact_person' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                 </th>
@@ -1097,6 +1276,7 @@ $paginatedSuppliers = array_slice($suppliers, $offset, $itemsPerPage);
                                 <th onclick="sortTable('status')" class="<?php echo $sortField === 'status' ? 'sorted' : ''; ?>">
                                     Status <span class="sort-icon"><?php echo $sortField === 'status' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                 </th>
+                                <th>Privacy Acknowledgement</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
@@ -1106,6 +1286,7 @@ $paginatedSuppliers = array_slice($suppliers, $offset, $itemsPerPage);
                                 <tr>
                                     <td><strong><?php echo htmlspecialchars($supplier['supplier_code']); ?></strong></td>
                                     <td><?php echo htmlspecialchars($supplier['company_name']); ?></td>
+                                    <td><?php echo htmlspecialchars(ucfirst(str_replace('_', ' ', $supplier['supplier_type'] ?? 'general'))); ?></td>
                                     <td><?php echo htmlspecialchars($supplier['contact_person'] ?? 'N/A'); ?></td>
                                     <td><?php echo htmlspecialchars($supplier['email']); ?></td>
                                     <td>
@@ -1132,6 +1313,17 @@ $paginatedSuppliers = array_slice($suppliers, $offset, $itemsPerPage);
                                         ?>">
                                             <?php echo ucfirst($supplier['status']); ?>
                                         </span>
+                                    </td>
+                                    <td>
+                                        <?php if (!empty($supplier['privacy_acknowledged_at'])): ?>
+                                        <span class="status-badge status-active">Recorded</span>
+                                        <div style="font-size:11px;color:var(--secondary-text);">
+                                            <?php echo htmlspecialchars($supplier['privacy_acknowledged_by']); ?><br>
+                                            <?php echo htmlspecialchars($supplier['privacy_acknowledged_at']); ?>
+                                        </div>
+                                        <?php else: ?>
+                                        <span class="status-badge status-inactive">Not recorded</span>
+                                        <?php endif; ?>
                                     </td>
                                     <td>
                                         <div class="action-buttons">
@@ -1176,7 +1368,7 @@ $paginatedSuppliers = array_slice($suppliers, $offset, $itemsPerPage);
                                 <?php endforeach; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="7" class="empty-state">
+                                    <td colspan="9" class="empty-state">
                                         <i class="fas fa-truck"></i>
                                         <p>No suppliers found</p>
                                     </td>
@@ -1253,6 +1445,16 @@ $paginatedSuppliers = array_slice($suppliers, $offset, $itemsPerPage);
                                value="<?php echo isset($editSupplier['company_name']) ? htmlspecialchars($editSupplier['company_name']) : ''; ?>">
                     </div>
                 </div>
+
+                <div class="form-group">
+                    <label>Supplier / Vendor Type *</label>
+                    <input type="text" name="supplier_type" list="supplierTypeOptions" required maxlength="100"
+                           value="<?php echo htmlspecialchars($editSupplier['supplier_type'] ?? ''); ?>"
+                           placeholder="e.g., manufacturer, distributor, service provider">
+                    <datalist id="supplierTypeOptions">
+                        <option value="manufacturer"><option value="distributor"><option value="wholesaler"><option value="retailer"><option value="service_provider"><option value="other">
+                    </datalist>
+                </div>
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
                     <div class="form-group">
@@ -1296,6 +1498,25 @@ $paginatedSuppliers = array_slice($suppliers, $offset, $itemsPerPage);
                         <input type="text" name="payment_terms" 
                                value="<?php echo isset($editSupplier['payment_terms']) ? htmlspecialchars($editSupplier['payment_terms']) : 'Net 30'; ?>">
                     </div>
+                </div>
+
+                <?php $needsPrivacyAcknowledgement = !$editSupplier || empty($editSupplier['privacy_acknowledged_at']); ?>
+                <?php if (!$needsPrivacyAcknowledgement): ?>
+                <div class="form-group">
+                    <small>Latest acknowledgement: <?php echo htmlspecialchars($editSupplier['privacy_acknowledged_by']); ?> · <?php echo htmlspecialchars($editSupplier['privacy_acknowledged_at']); ?></small>
+                </div>
+                <?php endif; ?>
+                <div class="form-group">
+                    <label for="privacyAcknowledgedBy">Supplier representative acknowledging</label>
+                    <input id="privacyAcknowledgedBy" type="text" name="privacy_acknowledged_by"
+                           <?php echo $needsPrivacyAcknowledgement ? 'required' : ''; ?>
+                           placeholder="Full name of authorized representative">
+                </div>
+                <div class="form-group">
+                    <label style="display:flex;gap:8px;align-items:flex-start;">
+                        <input type="checkbox" name="privacy_acknowledged" value="1" <?php echo $needsPrivacyAcknowledgement ? 'required' : ''; ?>>
+                        <span><?php echo htmlspecialchars($privacyAcknowledgementText); ?><?php if (!$needsPrivacyAcknowledgement): ?> Record a renewed acknowledgement.<?php endif; ?></span>
+                    </label>
                 </div>
                 
                 <?php if ($editSupplier): ?>

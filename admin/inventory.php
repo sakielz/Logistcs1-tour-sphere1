@@ -60,12 +60,29 @@ if (!defined('COLOR_BORDER')) define('COLOR_BORDER', '#EEF2F7');
 
 $action = isset($_GET['action']) ? $_GET['action'] : 'list';
 
+try {
+    $stmt = $pdo->query("SELECT w.id, w.name, w.warehouse_code, w.group_id, g.group_name FROM warehouses w LEFT JOIN inventory_groups g ON g.id = w.group_id WHERE w.is_archived = 0 AND w.status = 'active' ORDER BY g.group_name, w.name");
+    $warehouses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $warehouses = [];
+}
+$selectedWarehouse = null;
+foreach ($warehouses as $warehouse) {
+    if ((int)$warehouse['id'] === (int)($_GET['warehouse_id'] ?? 0)) {
+        $selectedWarehouse = $warehouse;
+        break;
+    }
+}
+
 // Create Product
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $sku = isset($_POST['sku']) ? trim($_POST['sku']) : '';
     $product_name = isset($_POST['product_name']) ? trim($_POST['product_name']) : '';
     $description = isset($_POST['description']) ? trim($_POST['description']) : '';
+    $brand = isset($_POST['brand']) ? trim($_POST['brand']) : '';
     $category = isset($_POST['category']) ? trim($_POST['category']) : '';
+    $item_type = isset($_POST['item_type']) ? trim($_POST['item_type']) : 'general';
+    $warehouse_id = isset($_POST['warehouse_id']) ? (int)$_POST['warehouse_id'] : 0;
     $unit_measure = isset($_POST['unit_measure']) ? trim($_POST['unit_measure']) : '';
     $unit_price = isset($_POST['unit_price']) ? (float)$_POST['unit_price'] : 0;
     $reorder_point = isset($_POST['reorder_point']) ? (int)$_POST['reorder_point'] : 0;
@@ -79,20 +96,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $barcode = generateBarcode($sku);
     
     try {
+        $warehouseCheck = $pdo->prepare("SELECT id FROM warehouses WHERE id = ? AND is_archived = 0 AND status = 'active'");
+        $warehouseCheck->execute([$warehouse_id]);
+        if (!$warehouseCheck->fetchColumn()) {
+            throw new RuntimeException('Select an active warehouse for this item.');
+        }
+
         $pdo->beginTransaction();
         
-        $stmt = $pdo->prepare("INSERT INTO products (sku, product_name, description, category, unit_measure, unit_price, reorder_point, reorder_quantity, current_stock, min_stock, max_stock, barcode, serial_number_prefix, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->execute([$sku, $product_name, $description, $category, $unit_measure, $unit_price, $reorder_point, $reorder_quantity, $current_stock, $min_stock, $max_stock, $barcode, $serial_number_prefix, $_SESSION['user_id']]);
+        $stmt = $pdo->prepare("INSERT INTO products (sku, product_name, description, brand, category, item_type, unit_measure, unit_price, reorder_point, reorder_quantity, current_stock, min_stock, max_stock, barcode, serial_number_prefix, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$sku, $product_name, $description, $brand, $category, $item_type, $unit_measure, $unit_price, $reorder_point, $reorder_quantity, $current_stock, $min_stock, $max_stock, $barcode, $serial_number_prefix, $_SESSION['user_id']]);
         
         $product_id = $pdo->lastInsertId();
+
+        $stmt = $pdo->prepare("INSERT INTO warehouse_inventory (product_id, warehouse_id, quantity) VALUES (?, ?, ?)");
+        $stmt->execute([$product_id, $warehouse_id, $current_stock]);
         
         // Generate initial serial number - USING THE FUNCTION FROM DATABASE.PHP
         generateSerialNumber($product_id);
         
         // Log initial stock
         if ($current_stock > 0) {
-            $stmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, created_by) VALUES (?, 'receiving', ?, 0, ?, ?)");
-            $stmt->execute([$product_id, $current_stock, $current_stock, $_SESSION['user_id']]);
+            $stmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, warehouse_id, created_by) VALUES (?, 'receiving', ?, 0, ?, ?, ?)");
+            $stmt->execute([$product_id, $current_stock, $current_stock, $warehouse_id, $_SESSION['user_id']]);
         }
         
         $pdo->commit();
@@ -101,8 +127,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
         $_SESSION['success'] = "Product created successfully! Barcode: $barcode";
         header('Location: inventory.php');
         exit();
-    } catch (PDOException $e) {
-        $pdo->rollBack();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
         $error = "Error creating product: " . $e->getMessage();
     }
 }
@@ -113,7 +139,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'edit') {
     $sku = isset($_POST['sku']) ? trim($_POST['sku']) : '';
     $product_name = isset($_POST['product_name']) ? trim($_POST['product_name']) : '';
     $description = isset($_POST['description']) ? trim($_POST['description']) : '';
+    $brand = isset($_POST['brand']) ? trim($_POST['brand']) : '';
     $category = isset($_POST['category']) ? trim($_POST['category']) : '';
+    $item_type = isset($_POST['item_type']) ? trim($_POST['item_type']) : 'general';
     $unit_measure = isset($_POST['unit_measure']) ? trim($_POST['unit_measure']) : '';
     $unit_price = isset($_POST['unit_price']) ? (float)$_POST['unit_price'] : 0;
     $reorder_point = isset($_POST['reorder_point']) ? (int)$_POST['reorder_point'] : 0;
@@ -123,8 +151,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'edit') {
     $status = isset($_POST['status']) ? $_POST['status'] : 'active';
     
     try {
-        $stmt = $pdo->prepare("UPDATE products SET sku = ?, product_name = ?, description = ?, category = ?, unit_measure = ?, unit_price = ?, reorder_point = ?, reorder_quantity = ?, min_stock = ?, max_stock = ?, status = ? WHERE id = ?");
-        $stmt->execute([$sku, $product_name, $description, $category, $unit_measure, $unit_price, $reorder_point, $reorder_quantity, $min_stock, $max_stock, $status, $id]);
+        $stmt = $pdo->prepare("UPDATE products SET sku = ?, product_name = ?, description = ?, brand = ?, category = ?, item_type = ?, unit_measure = ?, unit_price = ?, reorder_point = ?, reorder_quantity = ?, min_stock = ?, max_stock = ?, status = ? WHERE id = ?");
+        $stmt->execute([$sku, $product_name, $description, $brand, $category, $item_type, $unit_measure, $unit_price, $reorder_point, $reorder_quantity, $min_stock, $max_stock, $status, $id]);
         logAudit($_SESSION['user_id'], 'update_product', 'inventory', "Updated product: $product_name");
         $_SESSION['success'] = "Product updated successfully!";
         header('Location: inventory.php');
@@ -159,14 +187,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'adjust_stock') {
     $id = isset($_POST['id']) ? (int)$_POST['id'] : 0;
     $adjustment_type = isset($_POST['adjustment_type']) ? $_POST['adjustment_type'] : '';
     $quantity = isset($_POST['quantity']) ? (int)$_POST['quantity'] : 0;
+    $warehouse_id = isset($_POST['warehouse_id']) ? (int)$_POST['warehouse_id'] : 0;
     $notes = isset($_POST['notes']) ? trim($_POST['notes']) : '';
     
     try {
-        // Get current stock
-        $stmt = $pdo->prepare("SELECT current_stock FROM products WHERE id = ?");
-        $stmt->execute([$id]);
+        if ($id < 1 || $quantity < 0 || !in_array($adjustment_type, ['add', 'remove', 'set'], true)) {
+            throw new RuntimeException('Provide a valid product, adjustment type, and non-negative quantity.');
+        }
+
+        $stmt = $pdo->prepare("SELECT id FROM warehouses WHERE id = ? AND is_archived = 0 AND status = 'active'");
+        $stmt->execute([$warehouse_id]);
+        if (!$stmt->fetchColumn()) {
+            throw new RuntimeException('Select an active warehouse for this adjustment.');
+        }
+
+        $pdo->beginTransaction();
+        $stmt = $pdo->prepare("SELECT p.product_name, COALESCE(wi.quantity, 0) AS current_stock FROM products p LEFT JOIN warehouse_inventory wi ON wi.product_id = p.id AND wi.warehouse_id = ? WHERE p.id = ?");
+        $stmt->execute([$warehouse_id, $id]);
         $product = $stmt->fetch(PDO::FETCH_ASSOC);
-        $current_stock = $product['current_stock'];
+        if (!$product) throw new RuntimeException('Product not found.');
+        $current_stock = (int)$product['current_stock'];
         
         // Calculate new balance
         if ($adjustment_type === 'add') {
@@ -176,20 +216,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'adjust_stock') {
         } else {
             $new_stock = $quantity; // Set exact
         }
+        if ($new_stock < $current_stock) {
+            validateAndConsumeInventoryBatches($pdo, $id, $warehouse_id, $current_stock - $new_stock);
+        }
         
-        // Update product
-        $stmt = $pdo->prepare("UPDATE products SET current_stock = ? WHERE id = ?");
-        $stmt->execute([$new_stock, $id]);
+        $stmt = $pdo->prepare("SELECT id FROM warehouse_inventory WHERE product_id = ? AND warehouse_id = ?");
+        $stmt->execute([$id, $warehouse_id]);
+        $inventoryRowId = $stmt->fetchColumn();
+        if ($inventoryRowId) {
+            $stmt = $pdo->prepare("UPDATE warehouse_inventory SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+            $stmt->execute([$new_stock, $inventoryRowId]);
+        } else {
+            $stmt = $pdo->prepare("INSERT INTO warehouse_inventory (product_id, warehouse_id, quantity) VALUES (?, ?, ?)");
+            $stmt->execute([$id, $warehouse_id, $new_stock]);
+        }
+
+        $stmt = $pdo->prepare("UPDATE products SET current_stock = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?) WHERE id = ?");
+        $stmt->execute([$id, $id]);
         
         // Log transaction
-        $stmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, notes, created_by) VALUES (?, 'adjustment', ?, ?, ?, ?, ?)");
-        $stmt->execute([$id, abs($new_stock - $current_stock), $current_stock, $new_stock, $notes, $_SESSION['user_id']]);
+        $stmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, warehouse_id, notes, created_by) VALUES (?, 'adjustment', ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$id, abs($new_stock - $current_stock), $current_stock, $new_stock, $warehouse_id, $notes, $_SESSION['user_id']]);
         
         logAudit($_SESSION['user_id'], 'adjust_stock', 'inventory', "Adjusted stock for product ID: $id");
+        $pdo->commit();
         $_SESSION['success'] = "Stock adjusted successfully!";
         header('Location: inventory.php');
         exit();
-    } catch (PDOException $e) {
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
         $error = "Error adjusting stock: " . $e->getMessage();
     }
 }
@@ -198,12 +253,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'adjust_stock') {
 $showArchived = isset($_GET['archived']) ? 1 : 0;
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $category = isset($_GET['category']) ? trim($_GET['category']) : '';
+$itemType = isset($_GET['item_type']) ? trim($_GET['item_type']) : '';
+$statusFilter = isset($_GET['status']) ? trim($_GET['status']) : '';
+$minPrice = isset($_GET['min_price']) && $_GET['min_price'] !== '' ? max(0, (float)$_GET['min_price']) : null;
+$maxPrice = isset($_GET['max_price']) && $_GET['max_price'] !== '' ? max(0, (float)$_GET['max_price']) : null;
+$warehouseFilter = isset($_GET['warehouse_id']) ? (int)$_GET['warehouse_id'] : 0;
+$groupFilter = isset($_GET['group_id']) ? (int)$_GET['group_id'] : 0;
+if ($groupFilter > 0) {
+    foreach ($warehouses as $warehouse) {
+        if ((int)$warehouse['group_id'] === $groupFilter) {
+            $warehouseFilter = (int)$warehouse['id'];
+            $selectedWarehouse = $warehouse;
+            break;
+        }
+    }
+}
+$lowStockOnly = !$showArchived && ($_GET['filter'] ?? '') === 'low_stock';
+$obsoleteOnly = !$showArchived && ($_GET['filter'] ?? '') === 'obsolete';
+$expiringOnly = !$showArchived && ($_GET['filter'] ?? '') === 'expiring';
+$staleDays = 180;
+$staleCutoff = date('Y-m-d', strtotime('-' . $staleDays . ' days'));
+$expiryCutoff = date('Y-m-d', strtotime('+30 days'));
 
-$query = "SELECT p.*, u.full_name as created_by_name 
+try {
+    $stmt = $pdo->query("SELECT id, group_name FROM inventory_groups ORDER BY group_name");
+    $inventoryGroups = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $inventoryGroups = [];
+}
+
+$expiryWarehouseCondition = $warehouseFilter > 0 ? ' AND ib.warehouse_id = ' . (int)$warehouseFilter : '';
+$query = "SELECT p.*, u.full_name as created_by_name, COALESCE(wi.warehouse_stock, p.current_stock, 0) AS current_stock,
+          (SELECT MIN(ib.expiry_date) FROM inventory_batches ib WHERE ib.product_id = p.id AND ib.quality_status = 'accepted' AND ib.available_quantity > 0 AND ib.expiry_date IS NOT NULL" . $expiryWarehouseCondition . ") AS next_expiry
           FROM products p 
           LEFT JOIN users u ON p.created_by = u.id 
+          LEFT JOIN " . ($warehouseFilter > 0
+              ? "(SELECT product_id, quantity AS warehouse_stock FROM warehouse_inventory WHERE warehouse_id = ?) wi ON wi.product_id = p.id"
+              : "(SELECT product_id, SUM(quantity) AS warehouse_stock FROM warehouse_inventory GROUP BY product_id) wi ON wi.product_id = p.id") . "
           WHERE p.is_archived = ?";
-$params = [$showArchived];
+$params = $warehouseFilter > 0 ? [$warehouseFilter, $showArchived] : [$showArchived];
+
+if ($warehouseFilter > 0) {
+    $query .= " AND wi.product_id IS NOT NULL";
+}
 
 if (!empty($search)) {
     $query .= " AND (p.sku LIKE ? OR p.product_name LIKE ? OR p.barcode LIKE ?)";
@@ -218,15 +310,101 @@ if (!empty($category)) {
     $params[] = $category;
 }
 
-$query .= " ORDER BY p.created_at DESC";
+if ($itemType !== '') {
+    $query .= " AND p.item_type = ?";
+    $params[] = $itemType;
+}
+
+if ($statusFilter !== '') {
+    $query .= " AND p.status = ?";
+    $params[] = $statusFilter;
+}
+
+if ($minPrice !== null) {
+    $query .= " AND p.unit_price >= ?";
+    $params[] = $minPrice;
+}
+
+if ($maxPrice !== null) {
+    $query .= " AND p.unit_price <= ?";
+    $params[] = $maxPrice;
+}
+
+if ($expiringOnly) {
+    $query .= " AND EXISTS (SELECT 1 FROM inventory_batches ib WHERE ib.product_id = p.id AND ib.quality_status = 'accepted' AND ib.available_quantity > 0 AND ib.expiry_date <= ?" . $expiryWarehouseCondition . ")";
+    $params[] = $expiryCutoff;
+}
+
+if ($lowStockOnly) {
+    $query .= " AND COALESCE(wi.warehouse_stock, p.current_stock, 0) <= p.reorder_point";
+}
+
+if ($obsoleteOnly) {
+    $query .= " AND p.status = 'active' AND COALESCE(wi.warehouse_stock, p.current_stock, 0) > 0
+                AND NOT EXISTS (SELECT 1 FROM inventory_transactions it WHERE it.product_id = p.id AND DATE(it.created_at) >= ?";
+    $params[] = $staleCutoff;
+    if ($warehouseFilter > 0) {
+        $query .= " AND it.warehouse_id = ?";
+        $params[] = $warehouseFilter;
+    }
+    $query .= ")";
+}
+
+$query .= " ORDER BY p.category ASC, p.created_at DESC";
 
 try {
     $stmt = $pdo->prepare($query);
     $stmt->execute($params);
     $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    if ($products) {
+        $productIds = array_column($products, 'id');
+        $placeholders = implode(',', array_fill(0, count($productIds), '?'));
+        $stockStmt = $pdo->prepare("SELECT product_id, warehouse_id, quantity FROM warehouse_inventory WHERE product_id IN ($placeholders)");
+        $stockStmt->execute($productIds);
+        $warehouseStocks = [];
+        foreach ($stockStmt->fetchAll(PDO::FETCH_ASSOC) as $stockRow) {
+            $warehouseStocks[$stockRow['product_id']][(string)$stockRow['warehouse_id']] = (int)$stockRow['quantity'];
+        }
+        foreach ($products as &$product) {
+            $product['warehouse_stocks'] = $warehouseStocks[$product['id']] ?? [];
+        }
+        unset($product);
+    }
 } catch (PDOException $e) {
     $products = [];
     $error = "Error fetching products: " . $e->getMessage();
+}
+
+if ($action === 'export') {
+    $exportData = array_map(static function ($product) {
+        return [
+            'sku' => $product['sku'],
+            'product_name' => $product['product_name'],
+            'brand' => $product['brand'] ?? '',
+            'category' => $product['category'] ?? '',
+            'item_type' => $product['item_type'] ?? '',
+            'current_stock' => $product['current_stock'],
+            'unit_price' => $product['unit_price'],
+            'status' => $product['status'],
+            'next_expiry' => $product['next_expiry'] ?? '',
+        ];
+    }, $products);
+    require_once __DIR__ . '/../includes/report_export.php';
+    exportTrackedReport($pdo, (int)$_SESSION['user_id'], 'inventory', 'Inventory Register', strtolower(trim((string)($_GET['format'] ?? ''))), $exportData);
+}
+
+$productsByCategory = [];
+foreach ($products as $product) {
+    $categoryLabel = trim((string)($product['category'] ?? ''));
+    if ($categoryLabel === '') {
+        $categoryLabel = 'Uncategorized';
+    }
+    $categoryKey = strtolower($categoryLabel);
+    if (!isset($productsByCategory[$categoryKey])) {
+        $productsByCategory[$categoryKey] = ['label' => $categoryLabel, 'products' => []];
+    }
+    $productsByCategory[$categoryKey]['products'][] = $product;
 }
 
 // Get categories for filter
@@ -235,6 +413,13 @@ try {
     $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     $categories = [];
+}
+
+try {
+    $stmt = $pdo->query("SELECT DISTINCT item_type FROM products WHERE is_archived = 0 AND item_type IS NOT NULL ORDER BY item_type");
+    $itemTypes = $stmt->fetchAll(PDO::FETCH_COLUMN);
+} catch (PDOException $e) {
+    $itemTypes = [];
 }
 
 // Get product for edit
@@ -251,14 +436,78 @@ if ($action === 'edit' && isset($_GET['id'])) {
 
 // Get stock stats
 try {
-    $stmt = $pdo->query("SELECT COUNT(*) as total, SUM(current_stock) as total_stock, SUM(unit_price * current_stock) as total_value FROM products WHERE is_archived = 0");
-    $stockStats = $stmt->fetch(PDO::FETCH_ASSOC);
-    
-    $stmt = $pdo->query("SELECT COUNT(*) as low_stock FROM products WHERE current_stock <= reorder_point AND is_archived = 0");
-    $lowStock = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
+    if ($warehouseFilter > 0) {
+        $stmt = $pdo->prepare("SELECT COUNT(*) as total, COALESCE(SUM(wi.quantity), 0) as total_stock, COALESCE(SUM(p.unit_price * wi.quantity), 0) as total_value FROM warehouse_inventory wi JOIN products p ON p.id = wi.product_id WHERE p.is_archived = 0 AND wi.warehouse_id = ?");
+        $stmt->execute([$warehouseFilter]);
+        $stockStats = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $stmt = $pdo->prepare("SELECT COUNT(*) as low_stock, SUM(CASE WHEN wi.quantity <= 0 THEN 1 ELSE 0 END) as critical_stock FROM warehouse_inventory wi JOIN products p ON p.id = wi.product_id WHERE wi.quantity <= p.reorder_point AND p.is_archived = 0 AND wi.warehouse_id = ?");
+        $stmt->execute([$warehouseFilter]);
+        $stockAlertStats = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $stmt = $pdo->prepare("SELECT p.id, p.sku, p.product_name, wi.quantity as current_stock, p.reorder_point, p.reorder_quantity, p.max_stock, p.unit_price FROM warehouse_inventory wi JOIN products p ON p.id = wi.product_id WHERE wi.quantity <= p.reorder_point AND p.is_archived = 0 AND wi.warehouse_id = ? ORDER BY wi.quantity ASC, p.product_name ASC LIMIT 8");
+        $stmt->execute([$warehouseFilter]);
+    } else {
+        $stmt = $pdo->query("SELECT COUNT(*) as total, SUM(current_stock) as total_stock, SUM(unit_price * current_stock) as total_value FROM products WHERE is_archived = 0");
+        $stockStats = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $stmt = $pdo->query("SELECT COUNT(*) as low_stock, SUM(CASE WHEN current_stock <= 0 THEN 1 ELSE 0 END) as critical_stock FROM products WHERE current_stock <= reorder_point AND is_archived = 0");
+        $stockAlertStats = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $stmt = $pdo->query("SELECT id, sku, product_name, current_stock, reorder_point, reorder_quantity, max_stock, unit_price FROM products WHERE current_stock <= reorder_point AND is_archived = 0 ORDER BY current_stock ASC, product_name ASC LIMIT 8");
+    }
+    $lowStock = (int)($stockAlertStats['low_stock'] ?? 0);
+    $criticalStock = (int)($stockAlertStats['critical_stock'] ?? 0);
+    $lowStockProducts = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    if ($warehouseFilter > 0) {
+        $obsoleteSql = "SELECT COUNT(*) FROM warehouse_inventory wi JOIN products p ON p.id = wi.product_id WHERE p.is_archived = 0 AND p.status = 'active' AND wi.quantity > 0 AND wi.warehouse_id = ? AND NOT EXISTS (SELECT 1 FROM inventory_transactions it WHERE it.product_id = p.id AND it.warehouse_id = wi.warehouse_id AND DATE(it.created_at) >= ?)";
+        $obsoleteStmt = $pdo->prepare($obsoleteSql);
+        $obsoleteStmt->execute([$warehouseFilter, $staleCutoff]);
+    } else {
+        $obsoleteSql = "SELECT COUNT(*) FROM products p WHERE p.is_archived = 0 AND p.status = 'active' AND p.current_stock > 0 AND NOT EXISTS (SELECT 1 FROM inventory_transactions it WHERE it.product_id = p.id AND DATE(it.created_at) >= ?)";
+        $obsoleteStmt = $pdo->prepare($obsoleteSql);
+        $obsoleteStmt->execute([$staleCutoff]);
+    }
+    $obsoleteCount = (int)$obsoleteStmt->fetchColumn();
 } catch (PDOException $e) {
     $stockStats = ['total' => 0, 'total_stock' => 0, 'total_value' => 0];
     $lowStock = 0;
+    $criticalStock = 0;
+    $lowStockProducts = [];
+    $obsoleteCount = 0;
+}
+
+try {
+    $expirySql = "SELECT COUNT(DISTINCT product_id) FROM inventory_batches WHERE quality_status = 'accepted' AND available_quantity > 0 AND expiry_date IS NOT NULL AND expiry_date <= ?";
+    $expiryParams = [$expiryCutoff];
+    if ($warehouseFilter > 0) {
+        $expirySql .= ' AND warehouse_id = ?';
+        $expiryParams[] = $warehouseFilter;
+    }
+    $expiryStmt = $pdo->prepare($expirySql);
+    $expiryStmt->execute($expiryParams);
+    $expiringCount = (int)$expiryStmt->fetchColumn();
+} catch (PDOException $e) {
+    $expiringCount = 0;
+}
+
+try {
+    $batchSql = "SELECT ib.*, p.sku, p.product_name, w.name AS warehouse_name
+                 FROM inventory_batches ib
+                 JOIN products p ON p.id = ib.product_id
+                 JOIN warehouses w ON w.id = ib.warehouse_id";
+    $batchParams = [];
+    if ($warehouseFilter > 0) {
+        $batchSql .= ' WHERE ib.warehouse_id = ?';
+        $batchParams[] = $warehouseFilter;
+    }
+    $batchSql .= ' ORDER BY CASE WHEN ib.expiry_date IS NULL THEN 1 ELSE 0 END, ib.expiry_date ASC, ib.received_at DESC LIMIT 100';
+    $batchStmt = $pdo->prepare($batchSql);
+    $batchStmt->execute($batchParams);
+    $inventoryBatches = $batchStmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $inventoryBatches = [];
 }
 
 // Get theme setting
@@ -272,6 +521,9 @@ try {
 } catch (Exception $e) {
     $theme = 'light';
 }
+$inventoryExportParams = $_GET;
+unset($inventoryExportParams['action'], $inventoryExportParams['format']);
+$inventoryExportQuery = http_build_query($inventoryExportParams);
 ?>
 <!DOCTYPE html>
 <html lang="en" data-theme="<?php echo $theme; ?>">
@@ -520,6 +772,93 @@ try {
             background: #FEE2E2;
             color: #DC2626;
             border-left: 4px solid #DC2626;
+        }
+
+        .stock-alert {
+            padding: 16px 20px;
+            margin-bottom: 20px;
+            border: 1px solid #FED7AA;
+            border-left: 4px solid #D97706;
+            border-radius: 8px;
+            background: #FFF7ED;
+            color: #7C2D12;
+        }
+
+        .stock-alert-critical {
+            border-color: #FECACA;
+            border-left-color: #DC2626;
+            background: #FEF2F2;
+            color: #7F1D1D;
+        }
+
+        .stock-alert-header {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 12px;
+            align-items: baseline;
+            margin-bottom: 10px;
+        }
+
+        .stock-alert-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            list-style: none;
+            margin-bottom: 10px;
+        }
+
+        .stock-alert-list li {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 9px;
+            border: 1px solid currentColor;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+
+        .stock-alert-level {
+            font-weight: 700;
+            text-transform: uppercase;
+            font-size: 10px;
+        }
+
+        .stock-status-badge {
+            display: inline-block;
+            margin-top: 4px;
+            padding: 2px 7px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .stock-status-critical {
+            background: #FEE2E2;
+            color: #B91C1C;
+        }
+
+        .stock-status-low {
+            background: #FEF3C7;
+            color: #92400E;
+        }
+
+        .stock-status-normal {
+            background: #D1FAE5;
+            color: #065F46;
+        }
+
+        .category-group-row td {
+            padding: 10px 20px;
+            background: rgba(47, 128, 237, 0.08);
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .category-group-count {
+            margin-left: 8px;
+            color: var(--secondary-text);
+            font-size: 12px;
+            font-weight: 400;
         }
         
         .stats-grid {
@@ -835,6 +1174,8 @@ try {
                     <p>Manage products, stock levels, and barcodes</p>
                 </div>
                 <div class="top-bar-actions">
+                    <a href="inventory.php?action=export&amp;format=pdf<?php echo $inventoryExportQuery !== '' ? '&amp;' . htmlspecialchars($inventoryExportQuery, ENT_QUOTES) : ''; ?>" class="btn btn-outline" title="Export filtered inventory as PDF"><i class="fas fa-file-pdf"></i> PDF</a>
+                    <a href="inventory.php?action=export&amp;format=excel<?php echo $inventoryExportQuery !== '' ? '&amp;' . htmlspecialchars($inventoryExportQuery, ENT_QUOTES) : ''; ?>" class="btn btn-outline" title="Export filtered inventory as Excel"><i class="fas fa-file-excel"></i> Excel</a>
                     <a href="inventory.php?action=create" class="btn btn-primary">
                         <i class="fas fa-plus"></i> Add Product
                     </a>
@@ -858,6 +1199,34 @@ try {
                     <i class="fas fa-exclamation-circle"></i> <?php echo $_SESSION['error']; unset($_SESSION['error']); ?>
                 </div>
             <?php endif; ?>
+
+            <?php if (!$showArchived && $lowStock > 0): ?>
+                <div class="stock-alert <?php echo $criticalStock > 0 ? 'stock-alert-critical' : ''; ?>" role="alert" aria-live="polite">
+                    <div class="stock-alert-header">
+                        <strong><i class="fas fa-exclamation-triangle"></i> <?php echo $criticalStock > 0 ? 'Critical stock alert' : 'Low stock alert'; ?></strong>
+                        <span><?php echo number_format($lowStock); ?> item<?php echo $lowStock === 1 ? '' : 's'; ?> at or below reorder point<?php if ($criticalStock > 0): ?>, including <?php echo number_format($criticalStock); ?> out of stock<?php endif; ?>.</span>
+                    </div>
+                    <ul class="stock-alert-list">
+                        <?php foreach ($lowStockProducts as $alertProduct): ?>
+                        <li>
+                            <span class="stock-alert-level"><?php echo (int)$alertProduct['current_stock'] <= 0 ? 'Critical' : 'Low'; ?></span>
+                            <span><?php echo htmlspecialchars($alertProduct['product_name']); ?>: <?php echo number_format($alertProduct['current_stock']); ?> on hand, reorder at <?php echo number_format($alertProduct['reorder_point']); ?></span>
+                            <?php
+                            $restockTarget = (int)$alertProduct['max_stock'] > (int)$alertProduct['current_stock']
+                                ? (int)$alertProduct['max_stock']
+                                : (int)$alertProduct['reorder_point'] + max(1, (int)$alertProduct['reorder_quantity']);
+                            $suggestedQuantity = max(1, $restockTarget - (int)$alertProduct['current_stock']);
+                            ?>
+                            <a href="purchase-orders.php?action=create&amp;product_id=<?php echo (int)$alertProduct['id']; ?>&amp;quantity=<?php echo $suggestedQuantity; ?>">Create PO (+<?php echo number_format($suggestedQuantity); ?>)</a>
+                        </li>
+                        <?php endforeach; ?>
+                        <?php if ($lowStock > count($lowStockProducts)): ?>
+                        <li>+<?php echo number_format($lowStock - count($lowStockProducts)); ?> more</li>
+                        <?php endif; ?>
+                    </ul>
+                    <a href="inventory.php?filter=low_stock<?php echo $warehouseFilter > 0 ? '&amp;warehouse_id=' . $warehouseFilter : ''; ?>">View low-stock products</a>
+                </div>
+            <?php endif; ?>
             
             <!-- Stats -->
             <div class="stats-grid">
@@ -879,11 +1248,24 @@ try {
                         <?php echo $lowStock; ?>
                     </div>
                 </div>
+                <div class="stat-card" style="border-color: #7C3AED;">
+                    <div class="label">No Movement (<?php echo $staleDays; ?> days)</div>
+                    <div class="value" style="color: #7C3AED;"><?php echo number_format($obsoleteCount); ?></div>
+                    <a href="inventory.php?filter=obsolete<?php echo $warehouseFilter > 0 ? '&amp;warehouse_id=' . $warehouseFilter : ''; ?>">Review active stock</a>
+                </div>
+                <div class="stat-card" style="border-color: #D97706;">
+                    <div class="label">Expired / Expiring in 30 Days</div>
+                    <div class="value" style="color:#D97706;"><?php echo number_format($expiringCount); ?></div>
+                    <a href="inventory.php?filter=expiring<?php echo $warehouseFilter > 0 ? '&amp;warehouse_id=' . $warehouseFilter : ''; ?>">Review batches</a>
+                </div>
             </div>
             
             <!-- Search -->
             <div class="search-bar">
                 <form method="GET" style="display: flex; gap: 12px; flex: 1; flex-wrap: wrap;">
+                    <?php if ($lowStockOnly || $obsoleteOnly || $expiringOnly): ?>
+                    <input type="hidden" name="filter" value="<?php echo $lowStockOnly ? 'low_stock' : ($obsoleteOnly ? 'obsolete' : 'expiring'); ?>">
+                    <?php endif; ?>
                     <input type="text" name="search" placeholder="Search by SKU, name, or barcode..." 
                            value="<?php echo htmlspecialchars($search); ?>">
                     <select name="category">
@@ -895,11 +1277,47 @@ try {
                         </option>
                         <?php endforeach; ?>
                     </select>
+                    <select name="item_type">
+                        <option value="">All Item Types</option>
+                        <?php foreach ($itemTypes as $type): ?>
+                        <option value="<?php echo htmlspecialchars($type); ?>" <?php echo $itemType === $type ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars(ucfirst(str_replace('_', ' ', $type))); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <select name="status">
+                        <option value="">All Item Statuses</option>
+                        <?php foreach (['active', 'inactive', 'discontinued'] as $statusOption): ?>
+                        <option value="<?php echo $statusOption; ?>" <?php echo $statusFilter === $statusOption ? 'selected' : ''; ?>>
+                            <?php echo ucfirst($statusOption); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <input type="number" name="min_price" min="0" step="0.01" placeholder="Min price"
+                           value="<?php echo $minPrice !== null ? htmlspecialchars((string)$minPrice) : ''; ?>">
+                    <input type="number" name="max_price" min="0" step="0.01" placeholder="Max price"
+                           value="<?php echo $maxPrice !== null ? htmlspecialchars((string)$maxPrice) : ''; ?>">
+                    <select name="group_id">
+                        <option value="">All Groups</option>
+                        <?php foreach ($inventoryGroups as $inventoryGroup): ?>
+                        <option value="<?php echo (int)$inventoryGroup['id']; ?>" <?php echo $groupFilter === (int)$inventoryGroup['id'] ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($inventoryGroup['group_name']); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <select name="warehouse_id">
+                        <option value="">All Warehouses</option>
+                        <?php foreach ($warehouses as $warehouse): ?>
+                        <option value="<?php echo (int)$warehouse['id']; ?>" <?php echo $warehouseFilter === (int)$warehouse['id'] ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($warehouse['name'] . ' (' . $warehouse['warehouse_code'] . ')'); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
                     <button type="submit" class="btn btn-primary">
                         <i class="fas fa-search"></i> Search
                     </button>
-                    <?php if (!empty($search) || !empty($category)): ?>
-                    <a href="inventory.php" class="btn btn-outline">
+                    <?php if (!empty($search) || !empty($category) || $itemType !== '' || $statusFilter !== '' || $minPrice !== null || $maxPrice !== null || $groupFilter > 0 || $warehouseFilter > 0 || $lowStockOnly || $obsoleteOnly || $expiringOnly): ?>
+                    <a href="inventory.php<?php echo $lowStockOnly ? '?filter=low_stock' : ''; ?>" class="btn btn-outline">
                         <i class="fas fa-times"></i> Clear
                     </a>
                     <?php endif; ?>
@@ -918,19 +1336,30 @@ try {
                             <th>Product</th>
                             <th>Barcode</th>
                             <th>Category</th>
+                            <th>Item Type</th>
+                            <th>Warehouse</th>
                             <th>Stock</th>
                             <th>Price</th>
+                            <th>Next Expiry</th>
                             <th>Status</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($products as $product): ?>
+                        <?php foreach ($productsByCategory as $categoryGroup): ?>
+                        <tr class="category-group-row">
+                            <td colspan="11">
+                                <?php echo htmlspecialchars($categoryGroup['label']); ?>
+                                <span class="category-group-count"><?php echo count($categoryGroup['products']); ?> product<?php echo count($categoryGroup['products']) === 1 ? '' : 's'; ?></span>
+                            </td>
+                        </tr>
+                        <?php foreach ($categoryGroup['products'] as $product): ?>
                         <tr>
                             <td><strong><?php echo htmlspecialchars($product['sku']); ?></strong></td>
                             <td>
                                 <div><?php echo htmlspecialchars($product['product_name']); ?></div>
                                 <div style="font-size: 12px; color: var(--secondary-text);">
+                                    <?php if (!empty($product['brand'])): ?>Brand: <?php echo htmlspecialchars($product['brand']); ?> &middot; <?php endif; ?>
                                     <?php echo htmlspecialchars($product['description'] ?? ''); ?>
                                 </div>
                             </td>
@@ -940,11 +1369,15 @@ try {
                             <td>
                                 <span class="role-badge"><?php echo htmlspecialchars($product['category'] ?? 'N/A'); ?></span>
                             </td>
+                            <td><?php echo htmlspecialchars(ucfirst(str_replace('_', ' ', $product['item_type'] ?? 'general'))); ?></td>
+                            <td><?php echo $warehouseFilter > 0 ? htmlspecialchars((string)($selectedWarehouse['name'] ?? 'Selected warehouse')) : 'All warehouses'; ?></td>
                             <td>
                                 <div class="stock-indicator">
                                     <?php 
-                                    $stockPercent = $product['max_stock'] > 0 ? ($product['current_stock'] / $product['max_stock']) * 100 : 0;
-                                    $dotClass = $product['current_stock'] <= $product['reorder_point'] ? 'red' : 
+                                    $stockPercent = $product['max_stock'] > 0 ? ($product['current_stock'] / $product['max_stock']) * 100 : 100;
+                                    $isCriticalStock = (int)$product['current_stock'] <= 0;
+                                    $isLowStock = (int)$product['current_stock'] <= (int)$product['reorder_point'];
+                                    $dotClass = $isLowStock ? 'red' : 
                                                ($stockPercent < 30 ? 'yellow' : 'green');
                                     ?>
                                     <span class="stock-dot <?php echo $dotClass; ?>"></span>
@@ -954,9 +1387,20 @@ try {
                                         <?php echo htmlspecialchars($product['unit_measure']); ?>
                                     </span>
                                     <?php endif; ?>
+                                    <span class="stock-status-badge <?php echo $isCriticalStock ? 'stock-status-critical' : ($isLowStock ? 'stock-status-low' : 'stock-status-normal'); ?>">
+                                        <?php echo $isCriticalStock ? 'Critical: Out of stock' : ($isLowStock ? 'Low stock' : 'In stock'); ?>
+                                    </span>
                                 </div>
                             </td>
                             <td>₱<?php echo number_format($product['unit_price'], 2); ?></td>
+                            <td>
+                                <?php if (!empty($product['next_expiry'])): ?>
+                                    <?php $expiryIsPast = $product['next_expiry'] < date('Y-m-d'); ?>
+                                    <span class="status-badge <?php echo $expiryIsPast ? 'status-inactive' : 'status-maintenance'; ?>">
+                                        <?php echo $expiryIsPast ? 'Expired' : 'Expires'; ?> <?php echo htmlspecialchars($product['next_expiry']); ?>
+                                    </span>
+                                <?php else: ?>N/A<?php endif; ?>
+                            </td>
                             <td>
                                 <span class="status-badge <?php echo $product['status'] === 'active' ? 'status-active' : 'status-inactive'; ?>">
                                     <?php echo ucfirst($product['status']); ?>
@@ -965,7 +1409,9 @@ try {
                             <td>
                                 <div class="action-buttons">
                                     <?php if (!$showArchived): ?>
-                                    <button onclick="openStockAdjust(<?php echo $product['id']; ?>, '<?php echo htmlspecialchars($product['product_name']); ?>', <?php echo $product['current_stock']; ?>)" 
+                                        <button onclick="openStockAdjust(<?php echo (int)$product['id']; ?>, this)"
+                                            data-product-name="<?php echo htmlspecialchars($product['product_name'], ENT_QUOTES); ?>"
+                                            data-warehouse-stocks="<?php echo htmlspecialchars(json_encode($product['warehouse_stocks']), ENT_QUOTES); ?>"
                                             class="btn btn-success btn-sm" title="Adjust Stock">
                                         <i class="fas fa-edit"></i>
                                     </button>
@@ -988,9 +1434,10 @@ try {
                             </td>
                         </tr>
                         <?php endforeach; ?>
+                        <?php endforeach; ?>
                         <?php if (empty($products)): ?>
                         <tr>
-                            <td colspan="8" style="text-align: center; padding: 40px; color: var(--secondary-text);">
+                            <td colspan="11" style="text-align: center; padding: 40px; color: var(--secondary-text);">
                                 <i class="fas fa-box" style="font-size: 40px; display: block; margin-bottom: 10px;"></i>
                                 No products found
                             </td>
@@ -998,6 +1445,40 @@ try {
                         <?php endif; ?>
                     </tbody>
                 </table>
+            </div>
+            <div class="table-container" style="margin-top:24px;">
+                <div class="table-header">
+                    <h2>Batch, Expiry &amp; Quality Register</h2>
+                    <span class="role-badge">Latest <?php echo count($inventoryBatches); ?> batches</span>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead><tr><th>Item</th><th>Brand</th><th>Batch</th><th>Warehouse</th><th>Available</th><th>Expiry</th><th>Inspection</th><th>Notes</th><th>Receipt</th></tr></thead>
+                        <tbody>
+                            <?php foreach ($inventoryBatches as $batch): ?>
+                            <?php $batchExpired = !empty($batch['expiry_date']) && $batch['expiry_date'] < date('Y-m-d'); ?>
+                            <tr>
+                                <td><?php echo htmlspecialchars($batch['product_name'] . ' (' . $batch['sku'] . ')'); ?></td>
+                                <td><?php echo htmlspecialchars($batch['brand_snapshot'] ?? ''); ?></td>
+                                <td><?php echo htmlspecialchars($batch['batch_number']); ?></td>
+                                <td><?php echo htmlspecialchars($batch['warehouse_name']); ?></td>
+                                <td><?php echo number_format((int)$batch['available_quantity']); ?></td>
+                                <td>
+                                    <?php if ($batchExpired && $batch['quality_status'] === 'accepted'): ?>
+                                    <span class="status-badge status-inactive">Expired</span>
+                                    <?php elseif (!empty($batch['expiry_date'])): ?>
+                                    <?php echo htmlspecialchars($batch['expiry_date']); ?>
+                                    <?php else: ?>N/A<?php endif; ?>
+                                </td>
+                                <td><span class="status-badge <?php echo $batch['quality_status'] === 'accepted' ? 'status-active' : 'status-inactive'; ?>"><?php echo ucfirst($batch['quality_status']); ?></span></td>
+                                <td><?php echo htmlspecialchars($batch['quality_notes'] ?? ''); ?></td>
+                                <td><a href="purchase-orders.php?action=receipt&amp;receipt_number=<?php echo urlencode($batch['receipt_number']); ?>"><?php echo htmlspecialchars($batch['receipt_number']); ?></a></td>
+                            </tr>
+                            <?php endforeach; ?>
+                            <?php if (!$inventoryBatches): ?><tr><td colspan="9" class="empty-state">No received batches recorded.</td></tr><?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </main>
     </div>
@@ -1015,6 +1496,17 @@ try {
                 <div class="form-group">
                     <label>Current Stock</label>
                     <p id="stockCurrentStock" style="font-weight: 500;"></p>
+                    <small id="stockWarehouseName" style="color: var(--secondary-text);"></small>
+                </div>
+                <div class="form-group">
+                    <label>Warehouse</label>
+                    <select name="warehouse_id" id="stockWarehouseId" required>
+                        <?php foreach ($warehouses as $warehouse): ?>
+                        <option value="<?php echo (int)$warehouse['id']; ?>" <?php echo ((int)($selectedWarehouse['id'] ?? ($warehouses[0]['id'] ?? 0)) === (int)$warehouse['id']) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($warehouse['name'] . ' (' . $warehouse['warehouse_code'] . ')'); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
                 <div class="form-group">
                     <label>Adjustment Type</label>
@@ -1068,6 +1560,13 @@ try {
                            value="<?php echo isset($editProduct['product_name']) ? htmlspecialchars($editProduct['product_name']) : ''; ?>"
                            placeholder="e.g., Wireless Mouse">
                 </div>
+
+                <div class="form-group">
+                    <label>Brand</label>
+                    <input type="text" name="brand" maxlength="150"
+                           value="<?php echo isset($editProduct['brand']) ? htmlspecialchars($editProduct['brand']) : ''; ?>"
+                           placeholder="e.g., manufacturer or brand">
+                </div>
                 
                 <div class="form-group">
                     <label>Description</label>
@@ -1080,6 +1579,26 @@ try {
                            value="<?php echo isset($editProduct['category']) ? htmlspecialchars($editProduct['category']) : ''; ?>"
                            placeholder="e.g., Electronics">
                 </div>
+
+                <div class="form-group">
+                    <label>Item Type</label>
+                    <input type="text" name="item_type" required
+                           value="<?php echo isset($editProduct['item_type']) ? htmlspecialchars($editProduct['item_type']) : 'general'; ?>"
+                           placeholder="e.g., tour equipment, office supply, safety kit">
+                </div>
+
+                <?php if (!$editProduct): ?>
+                <div class="form-group">
+                    <label>Initial Warehouse *</label>
+                    <select name="warehouse_id" required>
+                        <?php foreach ($warehouses as $warehouse): ?>
+                        <option value="<?php echo (int)$warehouse['id']; ?>" <?php echo ((int)($selectedWarehouse['id'] ?? ($warehouses[0]['id'] ?? 0)) === (int)$warehouse['id']) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($warehouse['name'] . ' (' . $warehouse['warehouse_code'] . ')'); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <?php endif; ?>
                 
                 <div class="form-group">
                     <label>Unit Measure</label>
@@ -1155,10 +1674,20 @@ try {
     <?php endif; ?>
     
     <script>
-        function openStockAdjust(id, name, stock) {
+        function openStockAdjust(id, button) {
+            var warehouseStocks = JSON.parse(button.dataset.warehouseStocks || '{}');
             document.getElementById('stockProductId').value = id;
-            document.getElementById('stockProductName').textContent = name;
-            document.getElementById('stockCurrentStock').textContent = stock;
+            document.getElementById('stockProductName').textContent = button.dataset.productName;
+            var warehouseSelect = document.getElementById('stockWarehouseId');
+            var currentStock = document.getElementById('stockCurrentStock');
+            var warehouseName = document.getElementById('stockWarehouseName');
+            function updateWarehouseBalance() {
+                var selectedOption = warehouseSelect.options[warehouseSelect.selectedIndex];
+                currentStock.textContent = Number(warehouseStocks[warehouseSelect.value] || 0).toLocaleString();
+                warehouseName.textContent = selectedOption ? selectedOption.textContent : '';
+            }
+            warehouseSelect.onchange = updateWarehouseBalance;
+            updateWarehouseBalance();
             document.getElementById('stockModal').style.display = 'flex';
         }
         

@@ -30,21 +30,78 @@ try {
     $suppliers = [];
 }
 
+try {
+    $stmt = $pdo->query("SELECT id, name, warehouse_code FROM warehouses WHERE status = 'active' AND is_archived = false ORDER BY name");
+    $warehouses = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $warehouses = [];
+}
+
 // ============================================
 // GET PRODUCTS FOR DROPDOWN
 // ============================================
 try {
-    $stmt = $pdo->query("SELECT id, sku, product_name, unit_price, current_stock FROM products WHERE status = 'active' AND is_archived = false ORDER BY product_name");
+    $stmt = $pdo->query("SELECT id, sku, product_name, unit_price, current_stock, reorder_quantity, reorder_point, max_stock FROM products WHERE status = 'active' AND is_archived = false ORDER BY product_name");
     $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     $products = [];
 }
 
+$supplierBatchSuggestions = [];
+try {
+    $suggestionStmt = $pdo->query("SELECT supplier_id, product_id, ROUND(AVG(received_quantity)) AS suggested_quantity
+                                  FROM inventory_batches
+                                  WHERE quality_status = 'accepted' AND received_quantity > 0
+                                  GROUP BY supplier_id, product_id");
+    foreach ($suggestionStmt->fetchAll(PDO::FETCH_ASSOC) as $suggestion) {
+        $supplierBatchSuggestions[(string)$suggestion['supplier_id']][(string)$suggestion['product_id']] = (int)$suggestion['suggested_quantity'];
+    }
+} catch (PDOException $e) {
+    $supplierBatchSuggestions = [];
+}
+
+$prefillProduct = null;
+$prefillQuantity = max(1, (int)($_GET['quantity'] ?? 1));
+foreach ($products as $product) {
+    if ((int)$product['id'] === (int)($_GET['product_id'] ?? 0)) {
+        $prefillProduct = $product;
+        if (!isset($_GET['quantity'])) {
+            $prefillQuantity = max(1, (int)$product['reorder_quantity']);
+        }
+        break;
+    }
+}
+
 // ============================================
 // EXPORT FUNCTIONALITY
 // ============================================
+if ($action === 'export_receipt' && isset($_GET['format'], $_GET['receipt_number'])) {
+    $receiptNumber = trim((string)$_GET['receipt_number']);
+    $stmt = $pdo->prepare("SELECT b.receipt_number, po.po_number, s.company_name AS supplier, p.sku, p.product_name, b.brand_snapshot, b.batch_number, b.received_quantity, b.expiry_date, b.quality_status, b.quality_notes, w.name AS warehouse, b.received_at
+                           FROM inventory_batches b
+                           JOIN purchase_orders po ON po.id = b.po_id
+                           LEFT JOIN suppliers s ON s.id = b.supplier_id
+                           JOIN products p ON p.id = b.product_id
+                           JOIN warehouses w ON w.id = po.warehouse_id
+                           WHERE b.receipt_number = ? AND b.origin_batch_id IS NULL ORDER BY b.id");
+    $stmt->execute([$receiptNumber]);
+    $receiptData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    if (!$receiptData) {
+        $_SESSION['error'] = 'Goods receipt not found.';
+        header('Location: purchase-orders.php');
+        exit();
+    }
+    require_once __DIR__ . '/../includes/report_export.php';
+    exportTrackedReport($pdo, (int)$_SESSION['user_id'], 'inventory_receipts', 'Goods Receipt ' . $receiptNumber, strtolower(trim((string)$_GET['format'])), $receiptData);
+}
+
 if ($action === 'export' && isset($_GET['format'])) {
     $format = $_GET['format'];
+    $statusFilter = isset($_GET['status']) ? trim($_GET['status']) : '';
+    $paymentMethodFilter = isset($_GET['payment_method']) ? trim($_GET['payment_method']) : '';
+    $minAmount = isset($_GET['min_amount']) && $_GET['min_amount'] !== '' ? max(0, (float)$_GET['min_amount']) : null;
+    $maxAmount = isset($_GET['max_amount']) && $_GET['max_amount'] !== '' ? max(0, (float)$_GET['max_amount']) : null;
+    $search = isset($_GET['search']) ? trim($_GET['search']) : '';
     
     try {
         $query = "SELECT po.*, s.company_name, u.full_name as created_by_name 
@@ -58,6 +115,18 @@ if ($action === 'export' && isset($_GET['format'])) {
             $query .= " AND po.status = ?";
             $params[] = $statusFilter;
         }
+        if ($paymentMethodFilter !== '') {
+            $query .= ' AND po.payment_method = ?';
+            $params[] = $paymentMethodFilter;
+        }
+        if ($minAmount !== null) {
+            $query .= ' AND po.total_amount >= ?';
+            $params[] = $minAmount;
+        }
+        if ($maxAmount !== null) {
+            $query .= ' AND po.total_amount <= ?';
+            $params[] = $maxAmount;
+        }
         if (!empty($search)) {
             $query .= " AND (po.po_number LIKE ? OR s.company_name LIKE ?)";
             $searchParam = "%$search%";
@@ -70,6 +139,9 @@ if ($action === 'export' && isset($_GET['format'])) {
         $stmt = $pdo->prepare($query);
         $stmt->execute($params);
         $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        require_once __DIR__ . '/../includes/report_export.php';
+        exportTrackedReport($pdo, (int)$_SESSION['user_id'], 'purchase_orders', 'Purchase Orders', $format, $data);
         
         if ($format === 'csv') {
             header('Content-Type: text/csv');
@@ -154,6 +226,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $order_date = isset($_POST['order_date']) ? $_POST['order_date'] : date('Y-m-d');
     $expected_delivery = isset($_POST['expected_delivery']) ? $_POST['expected_delivery'] : '';
     $shipping_address = isset($_POST['shipping_address']) ? trim($_POST['shipping_address']) : '';
+    $warehouse_id = isset($_POST['warehouse_id']) ? (int)$_POST['warehouse_id'] : 0;
+    $payment_method = trim((string)($_POST['payment_method'] ?? ''));
     $terms = isset($_POST['terms']) ? trim($_POST['terms']) : '';
     $notes = isset($_POST['notes']) ? trim($_POST['notes']) : '';
     
@@ -161,10 +235,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $po_number = 'PO-' . date('Ymd') . '-' . str_pad(mt_rand(1, 999), 3, '0', STR_PAD_LEFT);
     
     try {
+        if (!in_array($payment_method, ['cash', 'digital_cash', 'credit'], true)) {
+            throw new RuntimeException('Choose cash, digital cash, or credits as the payment method.');
+        }
+        $warehouseCheck = $pdo->prepare("SELECT id FROM warehouses WHERE id = ? AND status = 'active' AND is_archived = false");
+        $warehouseCheck->execute([$warehouse_id]);
+        if (!$warehouseCheck->fetchColumn()) {
+            throw new RuntimeException('Select an active receiving warehouse.');
+        }
+
         $pdo->beginTransaction();
         
-        $stmt = $pdo->prepare("INSERT INTO purchase_orders (po_number, supplier_id, order_date, expected_delivery, shipping_address, terms, notes, status, approval_status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'pending_review', ?)");
-        $stmt->execute([$po_number, $supplier_id, $order_date, $expected_delivery, $shipping_address, $terms, $notes, $_SESSION['user_id']]);
+        $stmt = $pdo->prepare("INSERT INTO purchase_orders (po_number, supplier_id, warehouse_id, order_date, expected_delivery, shipping_address, payment_method, terms, notes, status, approval_status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending_review', ?)");
+        $stmt->execute([$po_number, $supplier_id, $warehouse_id, $order_date, $expected_delivery, $shipping_address, $payment_method, $terms, $notes, $_SESSION['user_id']]);
         $po_id = $pdo->lastInsertId();
         
         // Add items
@@ -190,12 +273,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
         
         $pdo->commit();
         
-        logAudit($_SESSION['user_id'], 'create_po', 'purchase_order', "Created PO: $po_number");
+        logAudit($_SESSION['user_id'], 'create_po', 'purchase_order', "Created PO: $po_number using payment method: $payment_method");
         $_SESSION['success'] = "Purchase Order $po_number created successfully!";
         header('Location: purchase-orders.php');
         exit();
-    } catch (PDOException $e) {
-        $pdo->rollBack();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
         $error = "Error creating PO: " . $e->getMessage();
     }
 }
@@ -203,12 +286,115 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
 // ============================================
 // UPDATE PO STATUS
 // ============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'receive') {
+    $id = (int)($_POST['id'] ?? 0);
+    $receiptNumber = 'GRN-' . date('YmdHis') . '-' . strtoupper(bin2hex(random_bytes(3)));
+
+    try {
+        $pdo->beginTransaction();
+        $poStmt = $pdo->prepare("SELECT po_number, supplier_id, warehouse_id, status FROM purchase_orders WHERE id = ?");
+        $poStmt->execute([$id]);
+        $po = $poStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$po || !in_array($po['status'], ['approved', 'shipped'], true)) {
+            throw new RuntimeException('Only approved or shipped purchase orders can be received.');
+        }
+
+        $itemsStmt = $pdo->prepare("SELECT poi.id, poi.product_id, poi.quantity, poi.received_quantity, p.brand, p.product_name
+                                    FROM purchase_order_items poi JOIN products p ON p.id = poi.product_id
+                                    WHERE poi.po_id = ?");
+        $itemsStmt->execute([$id]);
+        $poItems = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+        if (!$poItems) throw new RuntimeException('This purchase order has no items.');
+
+        $receiptLines = [];
+        $acceptedTotal = 0;
+        $firstBatchId = null;
+        foreach ($poItems as $poItem) {
+            $line = $_POST['items'][(int)$poItem['id']] ?? [];
+            $quantity = max(0, (int)($line['quantity'] ?? 0));
+            if ($quantity === 0) continue;
+
+            $remaining = (int)$poItem['quantity'] - (int)$poItem['received_quantity'];
+            $batchNumber = trim((string)($line['batch_number'] ?? ''));
+            $expiryDate = trim((string)($line['expiry_date'] ?? ''));
+            $qualityStatus = (string)($line['quality_status'] ?? 'rejected');
+            $qualityNotes = trim((string)($line['quality_notes'] ?? ''));
+            if ($quantity > $remaining) throw new RuntimeException('Received quantity exceeds the outstanding quantity for ' . $poItem['product_name'] . '.');
+            if ($batchNumber === '') throw new RuntimeException('Enter a supplier batch number for each received line.');
+            if (!in_array($qualityStatus, ['accepted', 'rejected'], true)) throw new RuntimeException('Choose an inspection result for each received line.');
+            if ($expiryDate !== '' && !DateTime::createFromFormat('!Y-m-d', $expiryDate)) throw new RuntimeException('Enter a valid expiry date.');
+            if ($qualityStatus === 'accepted' && $expiryDate !== '' && $expiryDate < date('Y-m-d')) {
+                throw new RuntimeException('Expired batches cannot be accepted into usable stock.');
+            }
+
+            $availableQuantity = $qualityStatus === 'accepted' ? $quantity : 0;
+            $batchStmt = $pdo->prepare("INSERT INTO inventory_batches (receipt_number, po_id, po_item_id, product_id, supplier_id, warehouse_id, batch_number, received_quantity, available_quantity, expiry_date, brand_snapshot, quality_status, quality_notes, received_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $batchStmt->execute([$receiptNumber, $id, $poItem['id'], $poItem['product_id'], $po['supplier_id'], $po['warehouse_id'], $batchNumber, $quantity, $availableQuantity, $expiryDate !== '' ? $expiryDate : null, $poItem['brand'], $qualityStatus, $qualityNotes, $_SESSION['user_id']]);
+            $batchId = (int)$pdo->lastInsertId();
+            if ($firstBatchId === null) $firstBatchId = $batchId;
+
+            $receivedStmt = $pdo->prepare('UPDATE purchase_order_items SET received_quantity = received_quantity + ? WHERE id = ?');
+            $receivedStmt->execute([$quantity, $poItem['id']]);
+
+            if ($availableQuantity > 0) {
+                $balanceStmt = $pdo->prepare('SELECT quantity FROM warehouse_inventory WHERE product_id = ? AND warehouse_id = ?');
+                $balanceStmt->execute([$poItem['product_id'], $po['warehouse_id']]);
+                $balanceValue = $balanceStmt->fetchColumn();
+                $previousBalance = (int)($balanceValue ?: 0);
+                $newBalance = $previousBalance + $availableQuantity;
+                if ($balanceValue === false) {
+                    $balanceStmt = $pdo->prepare('INSERT INTO warehouse_inventory (product_id, warehouse_id, quantity) VALUES (?, ?, ?)');
+                    $balanceStmt->execute([$poItem['product_id'], $po['warehouse_id'], $newBalance]);
+                } else {
+                    $balanceStmt = $pdo->prepare('UPDATE warehouse_inventory SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND warehouse_id = ?');
+                    $balanceStmt->execute([$newBalance, $poItem['product_id'], $po['warehouse_id']]);
+                }
+                $balanceStmt = $pdo->prepare('UPDATE products SET current_stock = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?) WHERE id = ?');
+                $balanceStmt->execute([$poItem['product_id'], $poItem['product_id']]);
+                $movementStmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, reference_document, warehouse_id, notes, created_by) VALUES (?, 'receiving', ?, ?, ?, ?, ?, ?, ?)");
+                $movementStmt->execute([$poItem['product_id'], $availableQuantity, $previousBalance, $newBalance, $receiptNumber, $po['warehouse_id'], 'Accepted batch ' . $batchNumber . ' from ' . $po['po_number'], $_SESSION['user_id']]);
+                $acceptedTotal += $availableQuantity;
+            }
+
+            $receiptLines[] = $poItem['product_name'] . ': ' . $quantity . ' (' . $qualityStatus . ')';
+        }
+
+        if (!$receiptLines) throw new RuntimeException('Enter a received quantity for at least one item.');
+        $remainingStmt = $pdo->prepare('SELECT COUNT(*) FROM purchase_order_items WHERE po_id = ? AND received_quantity < quantity');
+        $remainingStmt->execute([$id]);
+        $nextStatus = (int)$remainingStmt->fetchColumn() === 0 ? 'received' : 'shipped';
+        $updatePo = $pdo->prepare('UPDATE purchase_orders SET status = ? WHERE id = ?');
+        $updatePo->execute([$nextStatus, $id]);
+
+        $description = 'Receipt ' . $receiptNumber . ' for ' . $po['po_number'] . '. Accepted units: ' . $acceptedTotal . '. ' . implode('; ', $receiptLines);
+        $documentStmt = $pdo->prepare("INSERT INTO documents (document_number, document_type, title, description, related_module, related_id, status, created_by) VALUES (?, 'report', ?, ?, 'inventory_batches', ?, 'approved', ?)");
+        $documentStmt->execute([$receiptNumber, 'Goods Receipt ' . $receiptNumber, $description, $firstBatchId, $_SESSION['user_id']]);
+        $pdo->commit();
+
+        logAudit($_SESSION['user_id'], 'receive_purchase_order', 'purchase_order', 'Recorded ' . $receiptNumber . ' against PO ' . $po['po_number']);
+        header('Location: purchase-orders.php?action=receipt&receipt_number=' . urlencode($receiptNumber));
+        exit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $_SESSION['error'] = 'Could not record receipt: ' . $e->getMessage();
+        header('Location: purchase-orders.php?action=receive&id=' . $id);
+        exit();
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'update_status') {
     $id = isset($_POST['id']) ? (int)$_POST['id'] : 0;
     $status = isset($_POST['status']) ? $_POST['status'] : '';
     $notes = isset($_POST['notes']) ? trim($_POST['notes']) : '';
     
     try {
+        $pdo->beginTransaction();
+        $poLookup = $pdo->prepare("SELECT status, warehouse_id, po_number FROM purchase_orders WHERE id = ?");
+        $poLookup->execute([$id]);
+        $existingPO = $poLookup->fetch(PDO::FETCH_ASSOC);
+        if (!$existingPO) throw new RuntimeException('Purchase order not found.');
+        if ($status === 'received') throw new RuntimeException('Use the receiving workflow to record quantities and inspection results.');
+
         $stmt = $pdo->prepare("UPDATE purchase_orders SET status = ?, notes = ? WHERE id = ?");
         $stmt->execute([$status, $notes, $id]);
         
@@ -218,28 +404,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'update_status') {
         } elseif ($status === 'rejected') {
             $stmt = $pdo->prepare("UPDATE purchase_orders SET approval_status = 'rejected' WHERE id = ?");
             $stmt->execute([$id]);
-        } elseif ($status === 'received') {
-            // Update stock when PO is received
-            $stmt = $pdo->prepare("SELECT product_id, quantity FROM purchase_order_items WHERE po_id = ?");
-            $stmt->execute([$id]);
-            $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            foreach ($items as $item) {
-                $stmt2 = $pdo->prepare("UPDATE products SET current_stock = current_stock + ? WHERE id = ?");
-                $stmt2->execute([$item['quantity'], $item['product_id']]);
-                
-                // Log transaction
-                $stmt2 = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, reference_document, created_by) 
-                                        SELECT ?, 'receiving', ?, current_stock, current_stock + ?, ?, ? FROM products WHERE id = ?");
-                $stmt2->execute([$item['product_id'], $item['quantity'], $item['quantity'], $po_number, $_SESSION['user_id'], $item['product_id']]);
-            }
         }
+
+        $pdo->commit();
         
         logAudit($_SESSION['user_id'], 'update_po_status', 'purchase_order', "Updated PO ID $id to status: $status");
         $_SESSION['success'] = "PO status updated successfully!";
         header('Location: purchase-orders.php');
         exit();
     } catch (PDOException $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $error = "Error updating PO: " . $e->getMessage();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
         $error = "Error updating PO: " . $e->getMessage();
     }
 }
@@ -272,6 +449,9 @@ if ($action === 'restore' && isset($_GET['id'])) {
 // VIEW PO
 // ============================================
 $viewPO = null;
+$receivePO = null;
+$receiveItems = [];
+$receiptRows = [];
 if ($action === 'view' && isset($_GET['id'])) {
     try {
         $stmt = $pdo->prepare("SELECT po.*, s.company_name, s.contact_person, s.email, s.phone, u.full_name as created_by_name 
@@ -297,11 +477,43 @@ if ($action === 'view' && isset($_GET['id'])) {
     }
 }
 
+if ($action === 'receive' && isset($_GET['id'])) {
+    $receiveStmt = $pdo->prepare("SELECT po.*, s.company_name, w.name AS warehouse_name
+                                  FROM purchase_orders po
+                                  LEFT JOIN suppliers s ON s.id = po.supplier_id
+                                  LEFT JOIN warehouses w ON w.id = po.warehouse_id
+                                  WHERE po.id = ?");
+    $receiveStmt->execute([(int)$_GET['id']]);
+    $receivePO = $receiveStmt->fetch(PDO::FETCH_ASSOC);
+    if ($receivePO && in_array($receivePO['status'], ['approved', 'shipped'], true)) {
+        $receiveStmt = $pdo->prepare("SELECT poi.id, poi.quantity, poi.received_quantity, p.sku, p.product_name, p.brand
+                                      FROM purchase_order_items poi JOIN products p ON p.id = poi.product_id
+                                      WHERE poi.po_id = ? AND poi.received_quantity < poi.quantity ORDER BY poi.id");
+        $receiveStmt->execute([$receivePO['id']]);
+        $receiveItems = $receiveStmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+}
+
+if ($action === 'receipt' && isset($_GET['receipt_number'])) {
+    $receiptStmt = $pdo->prepare("SELECT b.*, po.po_number, s.company_name AS supplier, p.sku, p.product_name, w.name AS warehouse_name
+                                  FROM inventory_batches b
+                                  JOIN purchase_orders po ON po.id = b.po_id
+                                  LEFT JOIN suppliers s ON s.id = b.supplier_id
+                                  JOIN products p ON p.id = b.product_id
+                                  JOIN warehouses w ON w.id = po.warehouse_id
+                                  WHERE b.receipt_number = ? AND b.origin_batch_id IS NULL ORDER BY b.id");
+    $receiptStmt->execute([trim((string)$_GET['receipt_number'])]);
+    $receiptRows = $receiptStmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
 // ============================================
 // GET POs WITH FILTERS & SORTING
 // ============================================
 $showArchived = isset($_GET['archived']) ? 1 : 0;
 $statusFilter = isset($_GET['status']) ? $_GET['status'] : '';
+$paymentMethodFilter = isset($_GET['payment_method']) ? trim($_GET['payment_method']) : '';
+$minAmount = isset($_GET['min_amount']) && $_GET['min_amount'] !== '' ? max(0, (float)$_GET['min_amount']) : null;
+$maxAmount = isset($_GET['max_amount']) && $_GET['max_amount'] !== '' ? max(0, (float)$_GET['max_amount']) : null;
 $approvalFilter = isset($_GET['approval']) ? $_GET['approval'] : '';
 $supplierFilter = isset($_GET['supplier_id']) ? trim($_GET['supplier_id']) : '';
 $dateFrom = isset($_GET['date_from']) ? $_GET['date_from'] : '';
@@ -310,7 +522,7 @@ $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $sortField = isset($_GET['sort']) ? $_GET['sort'] : 'created_at';
 $sortOrder = isset($_GET['order']) && $_GET['order'] === 'asc' ? 'ASC' : 'DESC';
 
-$allowedSortFields = ['po_number', 'company_name', 'order_date', 'total_amount', 'status', 'approval_status', 'created_at'];
+$allowedSortFields = ['po_number', 'company_name', 'order_date', 'total_amount', 'payment_method', 'status', 'approval_status', 'created_at'];
 if (!in_array($sortField, $allowedSortFields)) {
     $sortField = 'created_at';
 }
@@ -333,6 +545,21 @@ try {
     if (!empty($statusFilter)) {
         $query .= " AND po.status = ?";
         $params[] = $statusFilter;
+    }
+
+    if ($paymentMethodFilter !== '') {
+        $query .= ' AND po.payment_method = ?';
+        $params[] = $paymentMethodFilter;
+    }
+
+    if ($minAmount !== null) {
+        $query .= ' AND po.total_amount >= ?';
+        $params[] = $minAmount;
+    }
+
+    if ($maxAmount !== null) {
+        $query .= ' AND po.total_amount <= ?';
+        $params[] = $maxAmount;
     }
     
     if (!empty($approvalFilter)) {
@@ -1052,10 +1279,19 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
             .table-container { box-shadow: none !important; border: 1px solid #ddd !important; }
             .stat-card { box-shadow: none !important; border: 1px solid #ddd !important; }
             body { background: white !important; color: black !important; }
+            body.receipt-print .main-content { display: block !important; margin: 0 !important; padding: 0 !important; width: 100% !important; }
+            body.receipt-print .main-content > :not(.modal-overlay) { display: none !important; }
+            body.receipt-print .main-content > .modal-overlay { position: static !important; display: block !important; padding: 0 !important; background: transparent !important; }
+            body.receipt-print .sidebar, body.receipt-print .fullscreen-toggle { display: none !important; }
+            body.receipt-print .admin-layout { display: block !important; }
+            body.receipt-print .receipt-modal { position: static !important; display: block !important; width: 100% !important; max-width: none !important; max-height: none !important; overflow: visible !important; box-shadow: none !important; border: 0 !important; }
+            body.receipt-print .receipt-paper { color: #111 !important; background: #fff !important; }
+            body.receipt-print .receipt-paper table { width: 100%; border-collapse: collapse; }
+            body.receipt-print .receipt-paper th, body.receipt-print .receipt-paper td { border: 1px solid #888; padding: 6px; }
         }
     </style>
 </head>
-<body>
+<body class="<?php echo $action === 'receipt' ? 'receipt-print' : ''; ?>">
     <div class="sidebar-overlay" id="sidebarOverlay"></div>
     <button class="fullscreen-toggle no-print" id="fullscreenToggle" title="Toggle Fullscreen">
         <i class="fas fa-expand"></i>
@@ -1085,10 +1321,10 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                             <i class="fas fa-download"></i> Export
                         </button>
                         <div class="dropdown-content" id="exportDropdown">
-                            <a href="purchase-orders.php?action=export&format=csv<?php echo '&status=' . $statusFilter . '&search=' . urlencode($search); ?>">
-                                <i class="fas fa-file-csv"></i> Export CSV
+                            <a href="purchase-orders.php?action=export&format=excel<?php echo '&status=' . urlencode($statusFilter) . '&payment_method=' . urlencode($paymentMethodFilter) . '&min_amount=' . urlencode((string)$minAmount) . '&max_amount=' . urlencode((string)$maxAmount) . '&search=' . urlencode($search); ?>">
+                                <i class="fas fa-file-excel"></i> Export Excel
                             </a>
-                            <a href="purchase-orders.php?action=export&format=pdf<?php echo '&status=' . $statusFilter . '&search=' . urlencode($search); ?>">
+                            <a href="purchase-orders.php?action=export&format=pdf<?php echo '&status=' . urlencode($statusFilter) . '&payment_method=' . urlencode($paymentMethodFilter) . '&min_amount=' . urlencode((string)$minAmount) . '&max_amount=' . urlencode((string)$maxAmount) . '&search=' . urlencode($search); ?>">
                                 <i class="fas fa-file-pdf"></i> Export PDF
                             </a>
                         </div>
@@ -1164,6 +1400,17 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                         <option value="completed" <?php echo $statusFilter === 'completed' ? 'selected' : ''; ?>>Completed</option>
                         <option value="cancelled" <?php echo $statusFilter === 'cancelled' ? 'selected' : ''; ?>>Cancelled</option>
                     </select>
+
+                    <select name="payment_method">
+                        <option value="">All Payment Methods</option>
+                        <option value="cash" <?php echo $paymentMethodFilter === 'cash' ? 'selected' : ''; ?>>Cash</option>
+                        <option value="digital_cash" <?php echo $paymentMethodFilter === 'digital_cash' ? 'selected' : ''; ?>>Digital Cash</option>
+                        <option value="credit" <?php echo $paymentMethodFilter === 'credit' ? 'selected' : ''; ?>>Credits</option>
+                    </select>
+                    <input type="number" name="min_amount" min="0" step="0.01" placeholder="Min total"
+                           value="<?php echo $minAmount !== null ? htmlspecialchars((string)$minAmount) : ''; ?>">
+                    <input type="number" name="max_amount" min="0" step="0.01" placeholder="Max total"
+                           value="<?php echo $maxAmount !== null ? htmlspecialchars((string)$maxAmount) : ''; ?>">
                     
                     <select name="approval">
                         <option value="">All Approvals</option>
@@ -1180,7 +1427,7 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                         <button type="submit" class="btn btn-primary">
                             <i class="fas fa-search"></i> Filter
                         </button>
-                        <?php if (!empty($search) || !empty($statusFilter) || !empty($approvalFilter) || !empty($supplierFilter) || !empty($dateFrom) || !empty($dateTo)): ?>
+                        <?php if (!empty($search) || !empty($statusFilter) || !empty($paymentMethodFilter) || $minAmount !== null || $maxAmount !== null || !empty($approvalFilter) || !empty($supplierFilter) || !empty($dateFrom) || !empty($dateTo)): ?>
                         <a href="purchase-orders.php<?php echo $showArchived ? '?archived=1' : ''; ?>" class="btn btn-outline">
                             <i class="fas fa-times"></i> Clear
                         </a>
@@ -1231,6 +1478,9 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                                     <th onclick="sortTable('total_amount')" class="<?php echo $sortField === 'total_amount' ? 'sorted' : ''; ?>">
                                         Total <span class="sort-icon"><?php echo $sortField === 'total_amount' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                     </th>
+                                    <th onclick="sortTable('payment_method')" class="<?php echo $sortField === 'payment_method' ? 'sorted' : ''; ?>">
+                                        Payment Method <span class="sort-icon"><?php echo $sortField === 'payment_method' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                    </th>
                                     <th onclick="sortTable('status')" class="<?php echo $sortField === 'status' ? 'sorted' : ''; ?>">
                                         Status <span class="sort-icon"><?php echo $sortField === 'status' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                     </th>
@@ -1252,6 +1502,7 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                                         <td><?php echo htmlspecialchars($po['company_name'] ?? 'N/A'); ?></td>
                                         <td><?php echo date('M d, Y', strtotime($po['order_date'])); ?></td>
                                         <td class="po-total">₱<?php echo number_format($po['total_amount'], 2); ?></td>
+                                        <td><?php echo htmlspecialchars(ucwords(str_replace('_', ' ', $po['payment_method'] ?? 'not recorded'))); ?></td>
                                         <td>
                                             <span class="status-badge po-<?php echo $po['status']; ?>">
                                                 <?php echo ucfirst($po['status']); ?>
@@ -1277,6 +1528,12 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                                                    class="btn btn-primary btn-sm" title="View Details">
                                                     <i class="fas fa-eye"></i>
                                                 </a>
+                                                <?php if (!$showArchived && in_array($po['status'], ['approved', 'shipped'], true)): ?>
+                                                <a href="purchase-orders.php?action=receive&id=<?php echo (int)$po['id']; ?>"
+                                                   class="btn btn-success btn-sm" title="Record receipt">
+                                                    <i class="fas fa-box-open"></i>
+                                                </a>
+                                                <?php endif; ?>
                                                 <?php if (!$showArchived && $po['status'] !== 'received' && $po['status'] !== 'cancelled' && $po['status'] !== 'completed'): ?>
                                                 <button onclick="openStatusModal(<?php echo $po['id']; ?>, '<?php echo htmlspecialchars($po['po_number']); ?>')" 
                                                         class="btn btn-success btn-sm" title="Update Status">
@@ -1302,7 +1559,7 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                                     <?php endforeach; ?>
                                 <?php else: ?>
                                     <tr>
-                                        <td colspan="8" class="empty-state">
+                                        <td colspan="9" class="empty-state">
                                             <i class="fas fa-file-invoice"></i>
                                             <p>No purchase orders found</p>
                                         </td>
@@ -1391,6 +1648,10 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                         <?php echo ucfirst(str_replace('_', ' ', $viewPO['approval_status'] ?? 'pending_review')); ?>
                     </span>
                 </div>
+                <div>
+                    <div style="font-size: 12px; color: var(--secondary-text);">Payment Method</div>
+                    <strong><?php echo htmlspecialchars(ucwords(str_replace('_', ' ', $viewPO['payment_method'] ?? 'not recorded'))); ?></strong>
+                </div>
             </div>
             
             <h4 style="margin-bottom: 10px;">Items</h4>
@@ -1403,6 +1664,7 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                     </div>
                 </div>
                 <div style="text-align: right;">
+                    <div><?php echo number_format($item['quantity']); ?> ordered · <?php echo number_format($item['received_quantity'] ?? 0); ?> received</div>
                     <div><?php echo number_format($item['quantity']); ?> x ₱<?php echo number_format($item['unit_price'], 2); ?></div>
                     <div style="font-weight: 600;">₱<?php echo number_format($item['total_price'], 2); ?></div>
                 </div>
@@ -1438,6 +1700,77 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
             </div>
         </div>
     </div>
+    <?php endif; ?>
+
+    <?php if ($action === 'receive' && $receivePO && $receiveItems): ?>
+    <div class="modal-overlay" style="display:flex;">
+        <div class="modal" style="max-width:900px;max-height:90vh;overflow-y:auto;">
+            <h3><i class="fas fa-box-open" style="color:var(--primary);"></i> Receive <?php echo htmlspecialchars($receivePO['po_number']); ?></h3>
+            <p>Supplier: <strong><?php echo htmlspecialchars($receivePO['company_name'] ?? 'N/A'); ?></strong> · Warehouse: <strong><?php echo htmlspecialchars($receivePO['warehouse_name'] ?? 'N/A'); ?></strong></p>
+            <form method="POST" action="purchase-orders.php?action=receive">
+                <input type="hidden" name="id" value="<?php echo (int)$receivePO['id']; ?>">
+                <?php foreach ($receiveItems as $receiveItem): $remainingQuantity = (int)$receiveItem['quantity'] - (int)$receiveItem['received_quantity']; ?>
+                <section class="item-row" style="display:grid;grid-template-columns:1.4fr repeat(3,minmax(110px,1fr));gap:10px;padding:14px 0;border-bottom:1px solid var(--border);">
+                    <div>
+                        <strong><?php echo htmlspecialchars($receiveItem['product_name']); ?></strong><br>
+                        <small><?php echo htmlspecialchars($receiveItem['sku']); ?><?php if (!empty($receiveItem['brand'])): ?> · <?php echo htmlspecialchars($receiveItem['brand']); ?><?php endif; ?></small><br>
+                        <small>Ordered <?php echo (int)$receiveItem['quantity']; ?> · Previously received <?php echo (int)$receiveItem['received_quantity']; ?> · Remaining <?php echo $remainingQuantity; ?></small>
+                    </div>
+                    <input type="number" name="items[<?php echo (int)$receiveItem['id']; ?>][quantity]" min="0" max="<?php echo $remainingQuantity; ?>" value="0" aria-label="Received quantity">
+                    <input type="text" name="items[<?php echo (int)$receiveItem['id']; ?>][batch_number]" maxlength="100" placeholder="Supplier batch #" aria-label="Supplier batch number">
+                    <input type="date" name="items[<?php echo (int)$receiveItem['id']; ?>][expiry_date]" aria-label="Expiry date">
+                    <select name="items[<?php echo (int)$receiveItem['id']; ?>][quality_status]" aria-label="Inspection result">
+                        <option value="">Inspection result</option>
+                        <option value="accepted">Accepted for use</option>
+                        <option value="rejected">Rejected / quarantined</option>
+                    </select>
+                    <input type="text" name="items[<?php echo (int)$receiveItem['id']; ?>][quality_notes]" placeholder="Inspection notes" aria-label="Inspection notes">
+                </section>
+                <?php endforeach; ?>
+                <div class="form-actions" style="margin-top:20px;">
+                    <a href="purchase-orders.php" class="btn btn-outline">Cancel</a>
+                    <button type="submit" class="btn btn-primary"><i class="fas fa-clipboard-check"></i> Record inspected receipt</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <?php elseif ($action === 'receive' && (!$receivePO || !$receiveItems)): ?>
+    <div class="modal-overlay" style="display:flex;"><div class="modal"><h3>Nothing to receive</h3><p>This PO must be approved or shipped and have outstanding quantities.</p><a href="purchase-orders.php" class="btn btn-outline">Back to purchase orders</a></div></div>
+    <?php endif; ?>
+
+    <?php if ($action === 'receipt' && $receiptRows): $receiptHeader = $receiptRows[0]; ?>
+    <div class="modal-overlay" style="display:flex;">
+        <div class="modal receipt-modal" style="max-width:900px;max-height:90vh;overflow-y:auto;">
+            <div class="receipt-paper">
+                <h2>Goods Receipt Note</h2>
+                <p><strong>Receipt:</strong> <?php echo htmlspecialchars($receiptHeader['receipt_number']); ?> · <strong>PO:</strong> <?php echo htmlspecialchars($receiptHeader['po_number']); ?></p>
+                <p><strong>Supplier:</strong> <?php echo htmlspecialchars($receiptHeader['supplier'] ?? 'N/A'); ?> · <strong>Warehouse:</strong> <?php echo htmlspecialchars($receiptHeader['warehouse_name']); ?></p>
+                <p><strong>Received:</strong> <?php echo htmlspecialchars($receiptHeader['received_at']); ?></p>
+                <table>
+                    <thead><tr><th>Item / SKU</th><th>Brand</th><th>Batch</th><th>Qty</th><th>Expiry</th><th>Inspection</th><th>Notes</th></tr></thead>
+                    <tbody><?php foreach ($receiptRows as $receiptRow): ?>
+                        <tr>
+                            <td><?php echo htmlspecialchars($receiptRow['product_name'] . ' / ' . $receiptRow['sku']); ?></td>
+                            <td><?php echo htmlspecialchars($receiptRow['brand_snapshot'] ?? ''); ?></td>
+                            <td><?php echo htmlspecialchars($receiptRow['batch_number']); ?></td>
+                            <td><?php echo (int)$receiptRow['received_quantity']; ?></td>
+                            <td><?php echo htmlspecialchars($receiptRow['expiry_date'] ?? 'N/A'); ?></td>
+                            <td><?php echo htmlspecialchars(ucfirst($receiptRow['quality_status'])); ?></td>
+                            <td><?php echo htmlspecialchars($receiptRow['quality_notes'] ?? ''); ?></td>
+                        </tr>
+                    <?php endforeach; ?></tbody>
+                </table>
+            </div>
+            <div class="form-actions no-print" style="margin-top:18px;">
+                <button type="button" class="btn btn-primary" onclick="window.print()"><i class="fas fa-print"></i> Print receipt</button>
+                <a class="btn btn-outline" href="purchase-orders.php?action=export_receipt&amp;format=pdf&amp;receipt_number=<?php echo urlencode($receiptHeader['receipt_number']); ?>"><i class="fas fa-file-pdf"></i> PDF</a>
+                <a class="btn btn-outline" href="purchase-orders.php?action=export_receipt&amp;format=excel&amp;receipt_number=<?php echo urlencode($receiptHeader['receipt_number']); ?>"><i class="fas fa-file-excel"></i> Excel</a>
+                <a href="purchase-orders.php" class="btn btn-outline">Close</a>
+            </div>
+        </div>
+    </div>
+    <?php elseif ($action === 'receipt'): ?>
+    <div class="modal-overlay" style="display:flex;"><div class="modal"><h3>Receipt not found</h3><a href="purchase-orders.php" class="btn btn-outline">Back to purchase orders</a></div></div>
     <?php endif; ?>
     
     <!-- Create PO Modal -->
@@ -1476,10 +1809,31 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                     <label>Shipping Address</label>
                     <textarea name="shipping_address" rows="2"></textarea>
                 </div>
+
+                <div class="form-group">
+                    <label>Receiving Warehouse *</label>
+                    <select name="warehouse_id" required>
+                        <?php foreach ($warehouses as $warehouse): ?>
+                        <option value="<?php echo (int)$warehouse['id']; ?>">
+                            <?php echo htmlspecialchars($warehouse['name'] . ' (' . $warehouse['warehouse_code'] . ')'); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Payment Method *</label>
+                    <select name="payment_method" required>
+                        <option value="">Choose a payment method</option>
+                        <option value="cash">Cash</option>
+                        <option value="digital_cash">Digital Cash</option>
+                        <option value="credit">Credits</option>
+                    </select>
+                </div>
                 
                 <div class="form-group">
-                    <label>Terms</label>
-                    <input type="text" name="terms" placeholder="e.g., Net 30">
+                    <label>Payment Terms</label>
+                    <input type="text" name="terms" placeholder="e.g., due on receipt, Net 30">
                 </div>
                 
                 <h4 style="margin: 15px 0 10px;">Items</h4>
@@ -1488,11 +1842,12 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                         <div>
                             <input type="text" class="product-search" list="productOptions" autocomplete="off"
                                    placeholder="search product" oninput="resolveProduct(this)" required
+                                   value="<?php echo $prefillProduct ? htmlspecialchars($prefillProduct['sku'] . ' - ' . $prefillProduct['product_name'], ENT_QUOTES) : ''; ?>"
                                    style="width: 100%; padding: 10px 14px; border: 2px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); box-sizing: border-box;">
-                            <input type="hidden" name="items[0][product_id]" class="product-id-field">
+                            <input type="hidden" name="items[0][product_id]" class="product-id-field" value="<?php echo $prefillProduct ? (int)$prefillProduct['id'] : ''; ?>">
                         </div>
-                        <input type="number" name="items[0][quantity]" placeholder="Qty" required style="padding: 10px 14px; border: 2px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);">
-                        <input type="number" name="items[0][unit_price]" placeholder="Price" required step="0.01" style="padding: 10px 14px; border: 2px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);">
+                        <input type="number" class="quantity-field" name="items[0][quantity]" placeholder="Qty" required min="1" value="<?php echo $prefillProduct ? $prefillQuantity : ''; ?>" style="padding: 10px 14px; border: 2px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);">
+                        <input type="number" name="items[0][unit_price]" placeholder="Price" required step="0.01" value="<?php echo $prefillProduct ? htmlspecialchars((string)$prefillProduct['unit_price'], ENT_QUOTES) : ''; ?>" style="padding: 10px 14px; border: 2px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);">
                         <button type="button" onclick="removeItem(this)" class="btn btn-danger btn-sm" style="padding: 8px 12px;">×</button>
                     </div>
                 </div>
@@ -1543,7 +1898,6 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                         <option value="approved">Approved</option>
                         <option value="rejected">Rejected</option>
                         <option value="shipped">Shipped</option>
-                        <option value="received">Received</option>
                         <option value="completed">Completed</option>
                         <option value="cancelled">Cancelled</option>
                     </select>
@@ -1641,15 +1995,30 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
         productsMap[<?php echo json_encode($product['sku'] . ' - ' . $product['product_name']); ?>] = <?php echo json_encode((string)$product['id']); ?>;
         <?php endforeach; ?>
         
+        var supplierBatchSuggestions = <?php echo json_encode($supplierBatchSuggestions); ?>;
+        var productReorderMap = {};
+        <?php foreach ($products as $product): ?>
+        productReorderMap[<?php echo json_encode((string)$product['id']); ?>] = <?php echo json_encode(max(1, (int)$product['reorder_quantity'])); ?>;
+        <?php endforeach; ?>
+
         function resolveSupplier(el) {
             var hidden = document.getElementById('supplierIdInput');
             hidden.value = suppliersMap[el.value] || '';
+            document.querySelectorAll('#itemsContainer .product-search').forEach(function(productInput) {
+                if (productInput.value) resolveProduct(productInput);
+            });
         }
         
         function resolveProduct(el) {
             var row = el.closest('.item-row');
             var hidden = row.querySelector('.product-id-field');
             hidden.value = productsMap[el.value] || '';
+            if (hidden.value) {
+                var supplierId = document.getElementById('supplierIdInput').value;
+                var suggestion = supplierBatchSuggestions[supplierId] && supplierBatchSuggestions[supplierId][hidden.value];
+                var quantityField = row.querySelector('.quantity-field');
+                if (quantityField) quantityField.value = suggestion || productReorderMap[hidden.value] || 1;
+            }
         }
         
         function validatePoForm() {

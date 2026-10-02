@@ -38,6 +38,84 @@ if (!function_exists('getTheme')) {
     }
 }
 
+if (!function_exists('validateAndConsumeInventoryBatches')) {
+    function validateAndConsumeInventoryBatches(PDO $pdo, int $productId, int $warehouseId, int $quantity, bool $allowExpired = false): void
+    {
+        $balanceStmt = $pdo->prepare('SELECT COALESCE(quantity, 0) FROM warehouse_inventory WHERE product_id = ? AND warehouse_id = ?');
+        $balanceStmt->execute([$productId, $warehouseId]);
+        $warehouseBalance = (int)$balanceStmt->fetchColumn();
+
+        $historyStmt = $pdo->prepare('SELECT COUNT(*) FROM inventory_batches WHERE product_id = ?');
+        $historyStmt->execute([$productId]);
+        $legacyBalance = (int)$historyStmt->fetchColumn() === 0 ? $warehouseBalance : 0;
+
+                $expiryCondition = $allowExpired ? '' : ' AND (expiry_date IS NULL OR expiry_date >= CURRENT_DATE)';
+                $batchStmt = $pdo->prepare("SELECT id, available_quantity FROM inventory_batches
+                                                                        WHERE product_id = ? AND warehouse_id = ? AND quality_status = 'accepted'
+                                                                            AND available_quantity > 0" . $expiryCondition . "
+                                                                        ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date, received_at, id");
+        $batchStmt->execute([$productId, $warehouseId]);
+        $batches = $batchStmt->fetchAll(PDO::FETCH_ASSOC);
+        $usableBatchBalance = array_sum(array_map(static function ($batch) {
+            return (int)$batch['available_quantity'];
+        }, $batches));
+        if ($quantity > $warehouseBalance || $quantity > $usableBatchBalance + $legacyBalance) {
+            throw new RuntimeException('Requested quantity exceeds usable, inspected, unexpired stock.');
+        }
+
+        $remaining = min($quantity, $usableBatchBalance);
+        foreach ($batches as $batch) {
+            if ($remaining <= 0) break;
+            $take = min($remaining, (int)$batch['available_quantity']);
+            $updateStmt = $pdo->prepare('UPDATE inventory_batches SET available_quantity = available_quantity - ? WHERE id = ?');
+            $updateStmt->execute([$take, $batch['id']]);
+            $remaining -= $take;
+        }
+    }
+}
+
+if (!function_exists('moveAvailableInventoryBatches')) {
+    function moveAvailableInventoryBatches(PDO $pdo, int $productId, int $sourceWarehouseId, int $destinationWarehouseId, int $quantity): void
+    {
+        $balanceStmt = $pdo->prepare('SELECT COALESCE(quantity, 0) FROM warehouse_inventory WHERE product_id = ? AND warehouse_id = ?');
+        $balanceStmt->execute([$productId, $sourceWarehouseId]);
+        $warehouseBalance = (int)$balanceStmt->fetchColumn();
+        $historyStmt = $pdo->prepare('SELECT COUNT(*) FROM inventory_batches WHERE product_id = ?');
+        $historyStmt->execute([$productId]);
+        $legacyBalance = (int)$historyStmt->fetchColumn() === 0 ? $warehouseBalance : 0;
+
+        $batchStmt = $pdo->prepare("SELECT id, origin_batch_id, available_quantity FROM inventory_batches
+                                    WHERE product_id = ? AND warehouse_id = ? AND quality_status = 'accepted'
+                                      AND available_quantity > 0 AND (expiry_date IS NULL OR expiry_date >= CURRENT_DATE)
+                                    ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date, received_at, id");
+        $batchStmt->execute([$productId, $sourceWarehouseId]);
+        $batches = $batchStmt->fetchAll(PDO::FETCH_ASSOC);
+        $usableBatchBalance = array_sum(array_map(static function ($batch) {
+            return (int)$batch['available_quantity'];
+        }, $batches));
+        if ($quantity > $warehouseBalance || $quantity > $usableBatchBalance + $legacyBalance) {
+            throw new RuntimeException('Transfer quantity exceeds usable, inspected, unexpired stock.');
+        }
+
+        $remaining = min($quantity, $usableBatchBalance);
+        foreach ($batches as $batch) {
+            if ($remaining <= 0) break;
+            $moveQuantity = min($remaining, (int)$batch['available_quantity']);
+            if ($moveQuantity === (int)$batch['available_quantity']) {
+                $moveStmt = $pdo->prepare('UPDATE inventory_batches SET warehouse_id = ? WHERE id = ?');
+                $moveStmt->execute([$destinationWarehouseId, $batch['id']]);
+            } else {
+                $moveStmt = $pdo->prepare('UPDATE inventory_batches SET available_quantity = available_quantity - ? WHERE id = ?');
+                $moveStmt->execute([$moveQuantity, $batch['id']]);
+                $copyStmt = $pdo->prepare("INSERT INTO inventory_batches (receipt_number, po_id, po_item_id, origin_batch_id, product_id, supplier_id, warehouse_id, batch_number, received_quantity, available_quantity, expiry_date, brand_snapshot, quality_status, quality_notes, received_by, received_at)
+                                           SELECT receipt_number, po_id, po_item_id, COALESCE(origin_batch_id, id), product_id, supplier_id, ?, batch_number, 0, ?, expiry_date, brand_snapshot, quality_status, quality_notes, received_by, received_at FROM inventory_batches WHERE id = ?");
+                $copyStmt->execute([$destinationWarehouseId, $moveQuantity, $batch['id']]);
+            }
+            $remaining -= $moveQuantity;
+        }
+    }
+}
+
 // ============================================
 // 1. Security Functions
 // ============================================
