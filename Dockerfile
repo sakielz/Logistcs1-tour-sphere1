@@ -18,9 +18,10 @@ RUN sed -ri -e 's!/var/www/html!/var/www/html/public!g' /etc/apache2/sites-avail
 
 # Copy dependency manifests and install PHP + Node packages
 COPY laravel-app/composer.* ./
-RUN composer install --no-interaction --no-ansi --no-progress --prefer-dist --optimize-autoloader --no-dev
+RUN composer install --no-interaction --no-ansi --no-progress --prefer-dist --optimize-autoloader --no-dev --no-scripts
 
 COPY laravel-app/ ./
+RUN composer dump-autoload --no-dev --optimize
 
 RUN chown -R www-data:www-data /var/www/html \
     && chmod -R 755 storage bootstrap/cache \
