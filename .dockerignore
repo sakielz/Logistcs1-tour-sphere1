@@ -8,6 +8,7 @@ laravel-app/vendor
 laravel-app/node_modules
 laravel-app/.env
 laravel-app/.env.*
+!laravel-app/.env.example
 laravel-app/storage/logs/*
 laravel-app/storage/framework/cache/*
 laravel-app/storage/framework/sessions/*
