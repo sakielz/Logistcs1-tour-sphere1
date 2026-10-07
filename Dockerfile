@@ -28,11 +28,11 @@ RUN printf '<VirtualHost *:__PORT__>\n\
 </VirtualHost>\n' > /etc/apache2/sites-available/000-default.conf
 
 # Install Composer dependencies (layer cache: only re-runs if composer.json/lock changes)
-COPY laravel-app/composer.* ./
+COPY composer.* ./
 RUN composer install --no-interaction --no-ansi --no-progress --prefer-dist --optimize-autoloader --no-dev --no-scripts
 
 # Copy application files and build assets
-COPY laravel-app/ ./
+COPY . ./
 RUN composer dump-autoload --no-dev --optimize \
     && npm install --no-fund --no-audit \
     && npm run build \
