@@ -20,7 +20,7 @@ RUN sed -ri -e 's!/var/www/html!/var/www/html/public!g' /etc/apache2/sites-avail
 RUN sed -ri -e 's/Listen 80/Listen ${PORT:-80}/g' /etc/apache2/ports.conf \
     && sed -ri -e 's/:80/:${PORT:-80}/g' /etc/apache2/sites-available/000-default.conf
 
-# Install Composer dependencies
+# Install Composer dependencies (layer cache: only re-runs if composer.json/lock changes)
 COPY laravel-app/composer.* ./
 RUN composer install --no-interaction --no-ansi --no-progress --prefer-dist --optimize-autoloader --no-dev --no-scripts
 
@@ -34,6 +34,11 @@ RUN composer dump-autoload --no-dev --optimize \
     && chown -R www-data:www-data /var/www/html \
     && chmod -R 775 storage bootstrap/cache
 
+# Copy entrypoint (must be COPY'd separately — it lives at repo root, not laravel-app/)
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 EXPOSE 80
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["apache2-foreground"]
