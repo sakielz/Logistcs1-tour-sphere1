@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // admin/archive.php
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
@@ -84,7 +84,8 @@ function getTableSchema(PDO $pdo, string $table, array &$cache): array {
                 return $cache[$table] = $info;
             }
 
-            $stmt = $pdo->query("PRAGMA table_info(`$table`)");
+            $cleanTable = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
+            $stmt = $pdo->query("PRAGMA table_info($cleanTable)");
             $cols = $stmt->fetchAll(PDO::FETCH_COLUMN, 1);
             if (empty($cols)) {
                 return $cache[$table] = $info;
@@ -149,7 +150,7 @@ try {
 function buildArchiveWhere(PDO $pdo, string $table, array $schema, string $search, string $dateFrom, string $dateTo, array &$params): string {
     // The archive column MUST exist for the table to participate
     $col = $schema['archive_column'];
-    $where = "`$col` = 1";
+    $where = "(`$col` = 1 OR `$col` = '1' OR `$col` = 'true' OR `$col` = TRUE)";
     $params = [];
 
     if ($search !== '') {
@@ -347,7 +348,7 @@ if ($action === 'view' && isset($_GET['table'], $_GET['id'])) {
     if (in_array($table, $allowedTables, true) && $schema['exists'] && $schema['has_archived']) {
         try {
             $col = $schema['archive_column'];
-            $stmt = $pdo->prepare("SELECT * FROM `$table` WHERE `id` = ? AND `$col` = 1");
+            $stmt = $pdo->prepare("SELECT * FROM `$table` WHERE `id` = ? AND (`$col` = 1 OR `$col` = '1' OR `$col` = 'true' OR `$col` = TRUE)");
             $stmt->execute([$id]);
             $viewRecord = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
             $viewTable  = $viewRecord ? $table : null;

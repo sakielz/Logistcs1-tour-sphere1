@@ -1,0 +1,76 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 1046>>
+stream
+BT
+/F1 8 Tf
+40 760 Td
+(Supply Chain Report 2026-09-07 to 2026-10-07) Tj
+0 -15 Td
+(Module: reports) Tj
+0 -15 Td
+(Generated: 2026-10-07 00:45:51) Tj
+0 -15 Td
+(Rows: 14) Tj
+0 -15 Td
+() Tj
+0 -15 Td
+(Section | Metric | Value) Tj
+0 -15 Td
+(----------------------------------------------------------------------------------------------------) Tj
+0 -15 Td
+(Inventory | Total Products | 1) Tj
+0 -15 Td
+(Inventory | Inventory Value | 20000000.00) Tj
+0 -15 Td
+(Inventory | Low Stock Items | 0) Tj
+0 -15 Td
+(Inventory | Out of Stock Items | 0) Tj
+0 -15 Td
+(Suppliers | Total Suppliers | 0) Tj
+0 -15 Td
+(Procurement | Total Purchase Orders | 1) Tj
+0 -15 Td
+(Procurement | Pending Purchase Orders | 1) Tj
+0 -15 Td
+(Procurement | Received Purchase Orders | 0) Tj
+0 -15 Td
+(Logistics | Total Shipments | 0) Tj
+0 -15 Td
+(Inventory | Units Received | 100) Tj
+0 -15 Td
+(Inventory | Units Issued | 0) Tj
+0 -15 Td
+(Period | From | 2026-09-07) Tj
+0 -15 Td
+(Period | To | 2026-10-07) Tj
+0 -15 Td
+(Top Products | paper \(SKU-00001\) | Stock 100; value 20000000.00) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001338 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1406
+%%EOF

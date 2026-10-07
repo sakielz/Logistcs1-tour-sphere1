@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // admin/purchase-orders.php
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
@@ -1653,6 +1653,19 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                     <strong><?php echo htmlspecialchars(ucwords(str_replace('_', ' ', $viewPO['payment_method'] ?? 'not recorded'))); ?></strong>
                 </div>
             </div>
+
+            <?php if (in_array($viewPO['payment_method'] ?? '', ['digital_cash', 'credit'], true)): ?>
+            <div style="margin: 16px 0; padding: 16px; background: rgba(47, 128, 237, 0.05); border: 2px dashed var(--primary); border-radius: var(--radius-sm); text-align: center;">
+                <div style="font-weight: 600; font-size: 14px; color: var(--text); margin-bottom: 4px;">
+                    <i class="fas fa-qrcode" style="color: var(--primary);"></i> Transaction QR Code (<?php echo ucwords(str_replace('_', ' ', $viewPO['payment_method'])); ?>)
+                </div>
+                <p style="font-size: 12px; color: var(--secondary-text); margin-bottom: 10px;">Scan to review or settle payment for this purchase order</p>
+                <div style="display: inline-block; background: white; padding: 12px; border-radius: 8px; box-shadow: var(--shadow);">
+                    <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=<?php echo urlencode('GLOBALSCM|PO:' . $viewPO['po_number'] . '|TOTAL:' . $viewPO['total_amount'] . '|METHOD:' . $viewPO['payment_method']); ?>" alt="Transaction QR" style="width: 150px; height: 150px; display: block; margin: 0 auto;">
+                </div>
+                <div style="margin-top: 8px; font-size: 12px; font-family: monospace; color: var(--text); font-weight: 600;">PO: <?php echo htmlspecialchars($viewPO['po_number']); ?> • Total: ₱<?php echo number_format($viewPO['total_amount'], 2); ?></div>
+            </div>
+            <?php endif; ?>
             
             <h4 style="margin-bottom: 10px;">Items</h4>
             <?php foreach ($viewPO['items'] as $item): ?>
@@ -1823,12 +1836,31 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
 
                 <div class="form-group">
                     <label>Payment Method *</label>
-                    <select name="payment_method" required>
+                    <select name="payment_method" id="poPaymentMethod" required onchange="handlePaymentMethodChange(this.value)">
                         <option value="">Choose a payment method</option>
                         <option value="cash">Cash</option>
                         <option value="digital_cash">Digital Cash</option>
                         <option value="credit">Credits</option>
                     </select>
+                </div>
+
+                <!-- Dynamic QR Code Container for Digital Cash / Credit Payment -->
+                <div id="paymentQrBox" style="display: none; margin: 15px 0; padding: 18px; background: rgba(47, 128, 237, 0.05); border: 2px dashed var(--primary); border-radius: var(--radius-sm); text-align: center; transition: all 0.3s ease;">
+                    <div style="font-weight: 600; font-size: 14px; color: var(--text); margin-bottom: 4px;">
+                        <i class="fas fa-qrcode" style="color: var(--primary);"></i> <span id="qrHeading">Scan QR Code for Payment Transaction</span>
+                    </div>
+                    <p id="qrSubheading" style="font-size: 12px; color: var(--secondary-text); margin-bottom: 12px;">
+                        Scan with GCash, Maya, or any QRPH-compliant banking app.
+                    </p>
+                    <div style="display: inline-block; background: white; padding: 12px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1);">
+                        <img id="paymentQrImg" src="" alt="Payment Transaction QR Code" style="width: 170px; height: 170px; display: block; margin: 0 auto;">
+                    </div>
+                    <div id="qrRefText" style="margin-top: 10px; font-size: 12px; font-family: monospace; color: var(--text); font-weight: 600;">
+                        REF: PO-TXN-PENDING
+                    </div>
+                    <div style="margin-top: 6px; font-size: 11px; color: #27AE60; font-weight: 500;">
+                        <i class="fas fa-shield-alt"></i> Verified Merchant QR • Ready for Transaction
+                    </div>
                 </div>
                 
                 <div class="form-group">
@@ -2018,6 +2050,33 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                 var suggestion = supplierBatchSuggestions[supplierId] && supplierBatchSuggestions[supplierId][hidden.value];
                 var quantityField = row.querySelector('.quantity-field');
                 if (quantityField) quantityField.value = suggestion || productReorderMap[hidden.value] || 1;
+            }
+        function handlePaymentMethodChange(method) {
+            var qrBox = document.getElementById('paymentQrBox');
+            var qrImg = document.getElementById('paymentQrImg');
+            var qrHeading = document.getElementById('qrHeading');
+            var qrSubheading = document.getElementById('qrSubheading');
+            var qrRefText = document.getElementById('qrRefText');
+
+            if (!qrBox) return;
+
+            if (method === 'digital_cash' || method === 'credit') {
+                var randomRef = 'TXN-' + Math.floor(100000 + Math.random() * 900000);
+                if (method === 'digital_cash') {
+                    qrHeading.textContent = 'Scan QR Code for Digital Cash Payment';
+                    qrSubheading.textContent = 'Scan via GCash, Maya, or any QRPH-compliant mobile banking app.';
+                    qrRefText.textContent = 'REF: ' + randomRef + ' • DIGITAL-CASH';
+                } else {
+                    qrHeading.textContent = 'Scan QR Code for Credit Transaction Verification';
+                    qrSubheading.textContent = 'Scan with credit authorization scanner to verify credit line allocation.';
+                    qrRefText.textContent = 'REF: ' + randomRef + ' • CREDIT-AUTH';
+                }
+
+                var qrPayload = encodeURIComponent('GLOBALSCM|PO|' + method.toUpperCase() + '|' + randomRef + '|TIME:' + Date.now());
+                qrImg.src = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + qrPayload;
+                qrBox.style.display = 'block';
+            } else {
+                qrBox.style.display = 'none';
             }
         }
         

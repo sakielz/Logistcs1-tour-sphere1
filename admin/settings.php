@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // admin/settings.php
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
@@ -28,47 +28,102 @@ if (!defined('COLOR_TEXT')) define('COLOR_TEXT', '#1F2937');
 if (!defined('COLOR_SECONDARY_TEXT')) define('COLOR_SECONDARY_TEXT', '#6B7280');
 if (!defined('COLOR_BORDER')) define('COLOR_BORDER', '#EEF2F7');
 
+// ============================================
+// DATABASE BACKUP ACTION
+// ============================================
+$action = isset($_GET['action']) ? $_GET['action'] : 'update';
+
+if ($action === 'backup_db') {
+    requireAuth('admin');
+    try {
+        $rootDir = dirname(__DIR__);
+        $sqlitePath = $rootDir . '/database/database.sqlite';
+        $timestamp = date('Y-m-d_His');
+        $backupFilename = 'logistics_backup_' . $timestamp . '.sqlite';
+        $backupDir = $rootDir . '/database/backups';
+
+        if (!is_dir($backupDir)) {
+            mkdir($backupDir, 0777, true);
+        }
+
+        if (is_file($sqlitePath)) {
+            $destination = $backupDir . '/' . $backupFilename;
+            copy($sqlitePath, $destination);
+
+            if (function_exists('logAudit')) {
+                logAudit($_SESSION['user_id'], 'backup_database', 'system', "Created database backup: $backupFilename");
+            }
+
+            header('Content-Description: File Transfer');
+            header('Content-Type: application/x-sqlite3');
+            header('Content-Disposition: attachment; filename="' . $backupFilename . '"');
+            header('Expires: 0');
+            header('Cache-Control: must-revalidate');
+            header('Pragma: public');
+            header('Content-Length: ' . filesize($destination));
+            readfile($destination);
+            exit();
+        } else {
+            $_SESSION['error'] = 'Database file not found at: ' . $sqlitePath;
+            header('Location: settings.php');
+            exit();
+        }
+    } catch (Exception $e) {
+        $_SESSION['error'] = 'Database backup failed: ' . $e->getMessage();
+        header('Location: settings.php');
+        exit();
+    }
+}
+
 // Handle settings update
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $settings = isset($_POST['settings']) ? $_POST['settings'] : [];
-    $action = isset($_GET['action']) ? $_GET['action'] : 'update';
+    $settings = isset($_POST['settings']) ? (array)$_POST['settings'] : [];
     
     if ($action === 'update') {
         try {
             $pdo->beginTransaction();
-            
-            foreach ($settings as $key => $value) {
-                // Handle file upload for logo
-                if ($key === 'company_logo' && isset($_FILES['company_logo']) && $_FILES['company_logo']['error'] === UPLOAD_ERR_OK) {
-                    $file = $_FILES['company_logo'];
-                    $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-                    $allowedExtensions = ['png', 'jpg', 'jpeg', 'gif', 'svg'];
-                    
-                    if (in_array($extension, $allowedExtensions) && $file['size'] < 2 * 1024 * 1024) {
-                        $uploadDir = __DIR__ . '/../uploads/logo/';
-                        if (!is_dir($uploadDir)) {
-                            mkdir($uploadDir, 0755, true);
-                        }
-                        $filename = 'company_logo.' . $extension;
-                        $targetPath = $uploadDir . $filename;
-                        if (move_uploaded_file($file['tmp_name'], $targetPath)) {
-                            $value = '/uploads/logo/' . $filename;
-                        }
+
+            // Handle file upload for company logo
+            if (isset($_FILES['company_logo']) && $_FILES['company_logo']['error'] === UPLOAD_ERR_OK) {
+                $file = $_FILES['company_logo'];
+                $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+                $allowedExtensions = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'];
+                
+                if (in_array($extension, $allowedExtensions, true) && $file['size'] <= 5 * 1024 * 1024) {
+                    $uploadDir = __DIR__ . '/../uploads/logo/';
+                    if (!is_dir($uploadDir)) {
+                        mkdir($uploadDir, 0755, true);
+                    }
+                    $filename = 'company_logo_' . time() . '.' . $extension;
+                    $targetPath = $uploadDir . $filename;
+                    if (move_uploaded_file($file['tmp_name'], $targetPath)) {
+                        $settings['company_logo'] = '../uploads/logo/' . $filename;
                     }
                 }
-                
-                $stmt = $pdo->prepare("UPDATE system_settings SET setting_value = ? WHERE setting_key = ?");
-                $stmt->execute([$value, $key]);
+            }
+
+            $driverName = strtolower($pdo->getAttribute(PDO::ATTR_DRIVER_NAME));
+
+            foreach ($settings as $key => $value) {
+                if ($driverName === 'sqlite') {
+                    $stmt = $pdo->prepare("INSERT INTO system_settings (setting_key, setting_value, setting_group) VALUES (?, ?, 'general') ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value");
+                    $stmt->execute([$key, (string)$value]);
+                } else {
+                    $stmt = $pdo->prepare("INSERT INTO system_settings (setting_key, setting_value, setting_group) VALUES (?, ?, 'general') ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+                    $stmt->execute([$key, (string)$value]);
+                }
             }
             
             $pdo->commit();
             
-            logAudit($_SESSION['user_id'], 'update_settings', 'system', 'Updated system settings');
-            $_SESSION['success'] = "Settings updated successfully!";
+            if (function_exists('logAudit')) {
+                logAudit($_SESSION['user_id'], 'update_settings', 'system', 'Updated system settings');
+            }
+            $_SESSION['success'] = "Settings and company profile updated successfully!";
             header('Location: settings.php');
             exit();
         } catch (PDOException $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) $pdo->rollBack();
             $error = "Error updating settings: " . $e->getMessage();
         }
     }
@@ -1113,63 +1168,268 @@ try {
                         </div>
                     </div>
                     
-                    <!-- ===== COMPANY PROFILE ===== -->
-                    <div class="settings-card">
-                        <div class="card-header">
-                            <div class="card-icon"><i class="fas fa-building"></i></div>
-                            <h3>Company Profile</h3>
+                    <!-- ===== COMPANY PROFILE OVERVIEW & DETAILED INFO ===== -->
+                    <div class="settings-card" style="grid-column: 1 / -1;">
+                        <div class="card-header" style="justify-content: space-between;">
+                            <div style="display: flex; align-items: center; gap: 12px;">
+                                <div class="card-icon" style="background: rgba(47, 128, 237, 0.15); color: var(--primary);">
+                                    <i class="fas fa-building"></i>
+                                </div>
+                                <div>
+                                    <h3 style="margin: 0; font-size: 16px;">Company Profile & Detailed Information</h3>
+                                    <p style="margin: 0; font-size: 12px; color: var(--secondary-text);">Organization identity and official credentials used across purchase orders, reports, and invoices</p>
+                                </div>
+                            </div>
+                            <span class="role-badge" style="background: rgba(39, 174, 96, 0.15); color: var(--accent); font-size: 11px;">
+                                <i class="fas fa-check-circle"></i> Verified Entity
+                            </span>
                         </div>
                         
-                        <div class="setting-item">
-                            <div class="info">
-                                <div class="label">Company Name</div>
-                                <div class="desc">Official company name</div>
-                            </div>
-                            <div class="control">
-                                <input type="text" name="settings[company_name]" 
-                                       value="<?php echo htmlspecialchars($settings['company_name']['setting_value'] ?? 'GlobalSCM Inc.'); ?>"
-                                       style="width: 180px;">
-                            </div>
-                        </div>
-                        
-                        <div class="setting-item">
-                            <div class="info">
-                                <div class="label">Business Address</div>
-                                <div class="desc">Company address for documents</div>
-                            </div>
-                            <div class="control">
-                                <input type="text" name="settings[company_address]" 
-                                       value="<?php echo htmlspecialchars($settings['company_address']['setting_value'] ?? ''); ?>"
-                                       style="width: 180px;">
-                            </div>
-                        </div>
-                        
-                        <div class="setting-item">
-                            <div class="info">
-                                <div class="label">Tax ID / VAT</div>
-                                <div class="desc">Tax identification number</div>
-                            </div>
-                            <div class="control">
-                                <input type="text" name="settings[tax_id]" 
-                                       value="<?php echo htmlspecialchars($settings['tax_id']['setting_value'] ?? ''); ?>"
-                                       style="width: 150px;">
-                            </div>
-                        </div>
-                        
-                        <div class="setting-item">
-                            <div class="info">
-                                <div class="label">Company Logo</div>
-                                <div class="desc">Upload company logo (PNG, JPG, SVG)</div>
-                            </div>
-                            <div class="control" style="display: flex; align-items: center; gap: 12px;">
-                                <div class="logo-preview">
+                        <!-- Detailed Info Overview Bar -->
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; padding: 18px; background: var(--bg); border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: 24px;">
+                            <div style="display: flex; gap: 14px; align-items: center;">
+                                <div style="width: 56px; height: 56px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--card); display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0;">
                                     <?php if (!empty($settings['company_logo']['setting_value'])): ?>
-                                        <img src="<?php echo htmlspecialchars($settings['company_logo']['setting_value']); ?>" alt="Logo">
+                                        <img src="<?php echo htmlspecialchars($settings['company_logo']['setting_value']); ?>" alt="Company Logo" style="width: 100%; height: 100%; object-fit: contain;">
                                     <?php else: ?>
-                                        <div class="placeholder"><i class="fas fa-image" style="font-size: 20px;"></i></div>
+                                        <i class="fas fa-building" style="font-size: 24px; color: var(--primary);"></i>
                                     <?php endif; ?>
                                 </div>
-                                <input type="file" name="company_logo" accept="image/*" style="width: 120px;">
+                                <div>
+                                    <div style="font-size: 11px; text-transform: uppercase; color: var(--secondary-text); font-weight: 600;">Organization</div>
+                                    <strong style="font-size: 14px; color: var(--text);"><?php echo htmlspecialchars($settings['company_name']['setting_value'] ?? 'GlobalSCM Inc.'); ?></strong>
+                                    <div style="font-size: 11px; color: var(--secondary-text);"><?php echo htmlspecialchars($settings['company_industry']['setting_value'] ?? 'Tours & Supply Chain Logistics'); ?></div>
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; text-transform: uppercase; color: var(--secondary-text); font-weight: 600;">Tax & Registration</div>
+                                <div style="font-size: 13px; color: var(--text); font-weight: 500;">TIN: <?php echo htmlspecialchars($settings['tax_id']['setting_value'] ?? 'TIN-009-876-543-000'); ?></div>
+                                <div style="font-size: 11px; color: var(--secondary-text);">Reg: <?php echo htmlspecialchars($settings['company_registration_no']['setting_value'] ?? 'SEC-CS2026-88712'); ?></div>
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; text-transform: uppercase; color: var(--secondary-text); font-weight: 600;">Official Contacts</div>
+                                <div style="font-size: 13px; color: var(--text); font-weight: 500;"><i class="fas fa-envelope" style="color: var(--primary); font-size: 11px;"></i> <?php echo htmlspecialchars($settings['company_email']['setting_value'] ?? 'admin@toursphere.com'); ?></div>
+                                <div style="font-size: 11px; color: var(--secondary-text);"><i class="fas fa-phone" style="color: var(--accent); font-size: 10px;"></i> <?php echo htmlspecialchars($settings['company_phone']['setting_value'] ?? '+63 (02) 8888-7777'); ?></div>
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; text-transform: uppercase; color: var(--secondary-text); font-weight: 600;">Address & Portal</div>
+                                <div style="font-size: 12px; color: var(--text);"><?php echo htmlspecialchars($settings['company_address']['setting_value'] ?? 'Corporate Tower, Bonifacio Global City, Taguig'); ?></div>
+                                <div style="font-size: 11px; color: var(--primary);"><i class="fas fa-globe"></i> <?php echo htmlspecialchars($settings['company_website']['setting_value'] ?? 'https://toursphere.com'); ?></div>
+                            </div>
+                        </div>
+
+                        <!-- Editable Fields Grid -->
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 20px;">
+                            
+                            <!-- Left Column: Identity & Logo -->
+                            <div>
+                                <!-- Clickable Company Logo UI -->
+                                <div class="setting-item" style="padding-top: 0;">
+                                    <div class="info">
+                                        <div class="label"><i class="fas fa-image" style="color: var(--primary);"></i> Company Logo</div>
+                                        <div class="desc">Click the logo box or icon to browse a new image (PNG, JPG, SVG up to 5MB)</div>
+                                    </div>
+                                    <div class="control">
+                                        <div style="display: flex; align-items: center; gap: 14px;">
+                                            <div id="companyLogoBox" 
+                                                 onclick="document.getElementById('companyLogoFileInput').click();"
+                                                 title="Click to choose new company logo"
+                                                 style="position: relative; width: 72px; height: 72px; border-radius: var(--radius-sm); border: 2px dashed var(--primary); background: var(--bg); display: flex; align-items: center; justify-content: center; cursor: pointer; overflow: hidden; transition: all 0.2s ease;">
+                                                <?php if (!empty($settings['company_logo']['setting_value'])): ?>
+                                                    <img id="logoPreviewImg" src="<?php echo htmlspecialchars($settings['company_logo']['setting_value']); ?>" alt="Company Logo" style="width: 100%; height: 100%; object-fit: contain;">
+                                                    <div id="logoPlaceholderIcon" style="display: none; text-align: center; color: var(--primary);">
+                                                        <i class="fas fa-cloud-upload-alt" style="font-size: 24px;"></i>
+                                                        <span style="display: block; font-size: 9px; font-weight: 600; text-transform: uppercase;">Upload</span>
+                                                    </div>
+                                                <?php else: ?>
+                                                    <img id="logoPreviewImg" src="" alt="Company Logo" style="display: none; width: 100%; height: 100%; object-fit: contain;">
+                                                    <div id="logoPlaceholderIcon" style="text-align: center; color: var(--primary);">
+                                                        <i class="fas fa-cloud-upload-alt" style="font-size: 24px;"></i>
+                                                        <span style="display: block; font-size: 9px; font-weight: 600; text-transform: uppercase;">Upload</span>
+                                                    </div>
+                                                <?php endif; ?>
+                                                <div style="position: absolute; inset: 0; background: rgba(0,0,0,0.45); display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; opacity: 0; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0'">
+                                                    <i class="fas fa-camera" style="font-size: 16px;"></i>
+                                                    <span style="font-size: 9px;">Change</span>
+                                                </div>
+                                            </div>
+                                            <input type="file" name="company_logo" id="companyLogoFileInput" accept="image/*" style="display: none;" onchange="previewSelectedLogo(this);">
+                                            <div>
+                                                <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('companyLogoFileInput').click();" style="display: inline-flex; align-items: center; gap: 6px;">
+                                                    <i class="fas fa-upload"></i> Upload Logo
+                                                </button>
+                                                <div id="selectedLogoName" style="font-size: 11px; color: var(--secondary-text); margin-top: 4px;">Directly clickable</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="setting-item">
+                                    <div class="info">
+                                        <div class="label">Company Display Name *</div>
+                                        <div class="desc">Public trade name used across navigation</div>
+                                    </div>
+                                    <div class="control">
+                                        <input type="text" name="settings[company_name]" 
+                                               value="<?php echo htmlspecialchars($settings['company_name']['setting_value'] ?? 'GlobalSCM Inc.'); ?>"
+                                               style="width: 220px;" required>
+                                    </div>
+                                </div>
+
+                                <div class="setting-item">
+                                    <div class="info">
+                                        <div class="label">Registered Legal Name</div>
+                                        <div class="desc">Official registered entity name for legal contracts</div>
+                                    </div>
+                                    <div class="control">
+                                        <input type="text" name="settings[company_legal_name]" 
+                                               value="<?php echo htmlspecialchars($settings['company_legal_name']['setting_value'] ?? 'Toursphere Travel & Tours Logistics Corporation'); ?>"
+                                               style="width: 220px;">
+                                    </div>
+                                </div>
+
+                                <div class="setting-item">
+                                    <div class="info">
+                                        <div class="label">Industry / Business Nature</div>
+                                        <div class="desc">Core sector for supply chain categorization</div>
+                                    </div>
+                                    <div class="control">
+                                        <input type="text" name="settings[company_industry]" 
+                                               value="<?php echo htmlspecialchars($settings['company_industry']['setting_value'] ?? 'Travel & Tourism Logistics'); ?>"
+                                               style="width: 220px;">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Right Column: Official Details & Contact -->
+                            <div>
+                                <div class="setting-item" style="padding-top: 0;">
+                                    <div class="info">
+                                        <div class="label">Tax ID / VAT / TIN</div>
+                                        <div class="desc">Tax identification number for purchase orders</div>
+                                    </div>
+                                    <div class="control">
+                                        <input type="text" name="settings[tax_id]" 
+                                               value="<?php echo htmlspecialchars($settings['tax_id']['setting_value'] ?? 'TIN-009-876-543-000'); ?>"
+                                               style="width: 220px;">
+                                    </div>
+                                </div>
+
+                                <div class="setting-item">
+                                    <div class="info">
+                                        <div class="label">SEC / DTI Registration No.</div>
+                                        <div class="desc">Official registration license identifier</div>
+                                    </div>
+                                    <div class="control">
+                                        <input type="text" name="settings[company_registration_no]" 
+                                               value="<?php echo htmlspecialchars($settings['company_registration_no']['setting_value'] ?? 'SEC-CS2026-88712'); ?>"
+                                               style="width: 220px;">
+                                    </div>
+                                </div>
+
+                                <div class="setting-item">
+                                    <div class="info">
+                                        <div class="label">Official Email Address</div>
+                                        <div class="desc">Procurement communication address</div>
+                                    </div>
+                                    <div class="control">
+                                        <input type="email" name="settings[company_email]" 
+                                               value="<?php echo htmlspecialchars($settings['company_email']['setting_value'] ?? 'admin@toursphere.com'); ?>"
+                                               style="width: 220px;">
+                                    </div>
+                                </div>
+
+                                <div class="setting-item">
+                                    <div class="info">
+                                        <div class="label">Official Phone / Hotline</div>
+                                        <div class="desc">Support & carrier contact line</div>
+                                    </div>
+                                    <div class="control">
+                                        <input type="text" name="settings[company_phone]" 
+                                               value="<?php echo htmlspecialchars($settings['company_phone']['setting_value'] ?? '+63 (02) 8888-7777'); ?>"
+                                               style="width: 220px;">
+                                    </div>
+                                </div>
+
+                                <div class="setting-item">
+                                    <div class="info">
+                                        <div class="label">Official Website URL</div>
+                                        <div class="desc">Public website and client portal URL</div>
+                                    </div>
+                                    <div class="control">
+                                        <input type="text" name="settings[company_website]" 
+                                               value="<?php echo htmlspecialchars($settings['company_website']['setting_value'] ?? 'https://toursphere.com'); ?>"
+                                               style="width: 220px;">
+                                    </div>
+                                </div>
+
+                                <div class="setting-item">
+                                    <div class="info">
+                                        <div class="label">Registered Physical Address</div>
+                                        <div class="desc">Headquarters address printed on documents</div>
+                                    </div>
+                                    <div class="control">
+                                        <input type="text" name="settings[company_address]" 
+                                               value="<?php echo htmlspecialchars($settings['company_address']['setting_value'] ?? 'Corporate Tower, Bonifacio Global City, Taguig'); ?>"
+                                               style="width: 220px;">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ===== DATABASE BACKUP & MAINTENANCE CARD ===== -->
+                    <div class="settings-card" style="border-color: #10B981;">
+                        <div class="card-header">
+                            <div class="card-icon" style="background: rgba(16, 185, 129, 0.15); color: #10B981;">
+                                <i class="fas fa-database"></i>
+                            </div>
+                            <div>
+                                <h3 style="margin: 0;">Database Backup & Maintenance</h3>
+                                <p style="margin: 0; font-size: 12px; color: var(--secondary-text);">Securely download or archive your operational database snapshot</p>
+                            </div>
+                        </div>
+
+                        <?php
+                        $dbFileSize = 'N/A';
+                        $dbFilePath = dirname(__DIR__) . '/database/database.sqlite';
+                        if (is_file($dbFilePath)) {
+                            $bytes = filesize($dbFilePath);
+                            $dbFileSize = round($bytes / 1024, 2) . ' KB (' . number_format($bytes) . ' bytes)';
+                        }
+                        ?>
+
+                        <div class="setting-item">
+                            <div class="info">
+                                <div class="label">Database Engine</div>
+                                <div class="desc">Active database connection driver</div>
+                            </div>
+                            <div class="control">
+                                <span class="role-badge" style="background: rgba(16, 185, 129, 0.15); color: #10B981; font-weight: 600;">
+                                    <i class="fas fa-server"></i> SQLite WAL Mode
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="setting-item">
+                            <div class="info">
+                                <div class="label">Database Storage Size</div>
+                                <div class="desc">Current operational data footprint</div>
+                            </div>
+                            <div class="control">
+                                <strong style="font-size: 13px; color: var(--text);"><?php echo $dbFileSize; ?></strong>
+                            </div>
+                        </div>
+
+                        <div class="setting-item" style="border-bottom: none; padding-top: 18px;">
+                            <div class="info">
+                                <div class="label">Download Database Backup</div>
+                                <div class="desc">Generates a complete standalone timestamped .sqlite database archive</div>
+                            </div>
+                            <div class="control">
+                                <a href="settings.php?action=backup_db" class="btn btn-success" style="display: inline-flex; align-items: center; gap: 8px; font-weight: 600; padding: 10px 18px;">
+                                    <i class="fas fa-download"></i> Download Database Backup
+                                </a>
                             </div>
                         </div>
                     </div>

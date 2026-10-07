@@ -1,7 +1,9 @@
-﻿<?php
+<?php
 // admin/inventory.php
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/barcode.php';
+require_once __DIR__ . '/../includes/function.php';
 
 requireAuth(['admin','warehouse_manager','inventory_clerk']);
 
@@ -53,12 +55,42 @@ if (!defined('COLOR_SECONDARY_TEXT')) define('COLOR_SECONDARY_TEXT', '#6B7280');
 if (!defined('COLOR_BORDER')) define('COLOR_BORDER', '#EEF2F7');
 
 // ============================================
-// NO DUPLICATE FUNCTIONS HERE
-// All functions are in config/database.php
-// generateSerialNumber() and generateBarcode() are already defined there
+// generateBarcode() and generateSerialNumber() are defined in includes/barcode.php
+// validateAndConsumeInventoryBatches() is defined in includes/function.php
 // ============================================
 
+/**
+ * Generate a unique SKU code like SKU-00042
+ */
+if (!function_exists('generateUniqueSKU')) {
+    function generateUniqueSKU(PDO $pdo): string {
+        $prefix = 'SKU';
+        try {
+            $stmt = $pdo->query(
+                "SELECT sku FROM products WHERE sku LIKE 'SKU-%' ORDER BY id DESC LIMIT 1"
+            );
+            $last = $stmt->fetchColumn();
+            if ($last && preg_match('/SKU-(\d+)$/', (string)$last, $m)) {
+                $next = (int)$m[1] + 1;
+            } else {
+                $countStmt = $pdo->query("SELECT COUNT(*) FROM products");
+                $next = (int)$countStmt->fetchColumn() + 1;
+            }
+        } catch (Exception $e) {
+            $next = mt_rand(1, 9999);
+        }
+        return $prefix . '-' . str_pad($next, 5, '0', STR_PAD_LEFT);
+    }
+}
+
 $action = isset($_GET['action']) ? $_GET['action'] : 'list';
+
+// ── AJAX: Generate unique SKU ─────────────────────────────────────────────
+if ($action === 'generate_sku' && !empty($_SERVER['HTTP_X_REQUESTED_WITH'])) {
+    header('Content-Type: application/json');
+    echo json_encode(['sku' => generateUniqueSKU($pdo)]);
+    exit();
+}
 
 try {
     $stmt = $pdo->query("SELECT w.id, w.name, w.warehouse_code, w.group_id, g.group_name FROM warehouses w LEFT JOIN inventory_groups g ON g.id = w.group_id WHERE w.is_archived = 0 AND w.status = 'active' ORDER BY g.group_name, w.name");
@@ -80,8 +112,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $product_name = isset($_POST['product_name']) ? trim($_POST['product_name']) : '';
     $description = isset($_POST['description']) ? trim($_POST['description']) : '';
     $brand = isset($_POST['brand']) ? trim($_POST['brand']) : '';
+    // Support custom category typed in the text fallback field
     $category = isset($_POST['category']) ? trim($_POST['category']) : '';
+    if ($category === '' && !empty($_POST['category_custom'])) {
+        $category = trim($_POST['category_custom']);
+    }
+    // Support custom item_type typed in the text fallback field
     $item_type = isset($_POST['item_type']) ? trim($_POST['item_type']) : 'general';
+    if (($item_type === '' || $item_type === '__custom__') && !empty($_POST['item_type_custom'])) {
+        $item_type = strtolower(trim(str_replace(' ', '_', $_POST['item_type_custom'])));
+    }
+    if ($item_type === '' || $item_type === '__custom__') $item_type = 'general';
+    // Auto-generate SKU if left empty
+    if ($sku === '') {
+        $sku = generateUniqueSKU($pdo);
+    }
     $warehouse_id = isset($_POST['warehouse_id']) ? (int)$_POST['warehouse_id'] : 0;
     $unit_measure = isset($_POST['unit_measure']) ? trim($_POST['unit_measure']) : '';
     $unit_price = isset($_POST['unit_price']) ? (float)$_POST['unit_price'] : 0;
@@ -1249,14 +1294,26 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                     </div>
                 </div>
                 <div class="stat-card" style="border-color: #7C3AED;">
-                    <div class="label">No Movement (<?php echo $staleDays; ?> days)</div>
+                    <div class="label">Obsolete Stock (No Movement <?php echo $staleDays; ?> days)</div>
                     <div class="value" style="color: #7C3AED;"><?php echo number_format($obsoleteCount); ?></div>
-                    <a href="inventory.php?filter=obsolete<?php echo $warehouseFilter > 0 ? '&amp;warehouse_id=' . $warehouseFilter : ''; ?>">Review active stock</a>
+                    <?php if ($obsoleteCount > 0): ?>
+                    <a href="inventory.php?filter=obsolete<?php echo $warehouseFilter > 0 ? '&amp;warehouse_id=' . $warehouseFilter : ''; ?>" style="font-size:13px;color:#7C3AED;">
+                        <i class="fas fa-eye"></i> Review Obsolete Stock
+                    </a>
+                    <?php else: ?>
+                    <span style="font-size:12px;color:var(--secondary-text);">No stagnant items</span>
+                    <?php endif; ?>
                 </div>
                 <div class="stat-card" style="border-color: #D97706;">
                     <div class="label">Expired / Expiring in 30 Days</div>
                     <div class="value" style="color:#D97706;"><?php echo number_format($expiringCount); ?></div>
-                    <a href="inventory.php?filter=expiring<?php echo $warehouseFilter > 0 ? '&amp;warehouse_id=' . $warehouseFilter : ''; ?>">Review batches</a>
+                    <?php if ($expiringCount > 0): ?>
+                    <a href="inventory.php?filter=expiring<?php echo $warehouseFilter > 0 ? '&amp;warehouse_id=' . $warehouseFilter : ''; ?>" style="font-size:13px;color:#D97706;">
+                        <i class="fas fa-layer-group"></i> Review Expiring Batches
+                    </a>
+                    <?php else: ?>
+                    <span style="font-size:12px;color:var(--secondary-text);">No expiring items</span>
+                    <?php endif; ?>
                 </div>
             </div>
             
@@ -1548,10 +1605,18 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                 <?php endif; ?>
                 
                 <div class="form-group">
-                    <label>SKU *</label>
-                    <input type="text" name="sku" required 
-                           value="<?php echo isset($editProduct['sku']) ? htmlspecialchars($editProduct['sku']) : ''; ?>"
-                           placeholder="e.g., SKU-001">
+                    <label>SKU * <span style="font-size:11px;color:var(--secondary-text);font-weight:400;">(auto-generated or enter manually)</span></label>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <input type="text" name="sku" id="skuField" required
+                               value="<?php echo isset($editProduct['sku']) ? htmlspecialchars($editProduct['sku']) : htmlspecialchars(generateUniqueSKU($pdo)); ?>"
+                               placeholder="e.g., SKU-00001"
+                               style="flex:1;">
+                        <?php if (!$editProduct): ?>
+                        <button type="button" onclick="regenerateSKU()" class="btn btn-outline" style="white-space:nowrap;padding:10px 14px;">
+                            <i class="fas fa-sync-alt"></i> Generate
+                        </button>
+                        <?php endif; ?>
+                    </div>
                 </div>
                 
                 <div class="form-group">
@@ -1575,16 +1640,50 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                 
                 <div class="form-group">
                     <label>Category</label>
-                    <input type="text" name="category" 
-                           value="<?php echo isset($editProduct['category']) ? htmlspecialchars($editProduct['category']) : ''; ?>"
-                           placeholder="e.g., Electronics">
+                    <select name="category" id="categorySelect" onchange="handleCategoryChange(this)">
+                        <option value="">-- Select Category --</option>
+                        <?php
+                        $existingCategoryValues = array_column($categories, 'category');
+                        $defaultCategories = ['Electronics', 'Office Supply', 'Tour Equipment', 'Safety Kit', 'Consumable', 'Furniture', 'Apparel', 'Machinery', 'Vehicle Part', 'Medical'];
+                        $allCategoryOptions = array_unique(array_merge($defaultCategories, $existingCategoryValues));
+                        sort($allCategoryOptions);
+                        $selectedCategory = isset($editProduct['category']) ? $editProduct['category'] : '';
+                        foreach ($allCategoryOptions as $catOpt):
+                        ?>
+                        <option value="<?php echo htmlspecialchars($catOpt); ?>"
+                            <?php echo $selectedCategory === $catOpt ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($catOpt); ?>
+                        </option>
+                        <?php endforeach; ?>
+                        <option value="__custom__">+ Add custom category...</option>
+                    </select>
+                    <input type="text" id="categoryCustomInput" name="category_custom"
+                           placeholder="Type new category name"
+                           style="display:none;margin-top:6px;"
+                           value="<?php echo (isset($editProduct['category']) && !in_array($editProduct['category'], $allCategoryOptions ?? [])) ? htmlspecialchars($editProduct['category']) : ''; ?>">
                 </div>
 
                 <div class="form-group">
                     <label>Item Type</label>
-                    <input type="text" name="item_type" required
-                           value="<?php echo isset($editProduct['item_type']) ? htmlspecialchars($editProduct['item_type']) : 'general'; ?>"
-                           placeholder="e.g., tour equipment, office supply, safety kit">
+                    <select name="item_type" id="itemTypeSelect" required onchange="handleItemTypeChange(this)">
+                        <?php
+                        $defaultItemTypes = ['general', 'tour_equipment', 'office_supply', 'safety_kit', 'consumable', 'machinery', 'vehicle_part', 'medical', 'furniture', 'apparel'];
+                        $allItemTypeOptions = array_unique(array_merge($defaultItemTypes, $itemTypes));
+                        sort($allItemTypeOptions);
+                        $selectedItemType = isset($editProduct['item_type']) ? $editProduct['item_type'] : 'general';
+                        foreach ($allItemTypeOptions as $typeOpt):
+                        ?>
+                        <option value="<?php echo htmlspecialchars($typeOpt); ?>"
+                            <?php echo $selectedItemType === $typeOpt ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars(ucfirst(str_replace('_', ' ', $typeOpt))); ?>
+                        </option>
+                        <?php endforeach; ?>
+                        <option value="__custom__">+ Add custom type...</option>
+                    </select>
+                    <input type="text" id="itemTypeCustomInput" name="item_type_custom"
+                           placeholder="Type new item type (use_underscores)"
+                           style="display:none;margin-top:6px;"
+                           value="<?php echo (isset($editProduct['item_type']) && !in_array($editProduct['item_type'], $allItemTypeOptions ?? [])) ? htmlspecialchars($editProduct['item_type']) : ''; ?>">
                 </div>
 
                 <?php if (!$editProduct): ?>
@@ -1674,6 +1773,7 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
     <?php endif; ?>
     
     <script>
+        // ── Stock Adjust Modal ───────────────────────────────────────────────
         function openStockAdjust(id, button) {
             var warehouseStocks = JSON.parse(button.dataset.warehouseStocks || '{}');
             document.getElementById('stockProductId').value = id;
@@ -1690,11 +1790,112 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
             updateWarehouseBalance();
             document.getElementById('stockModal').style.display = 'flex';
         }
-        
+
         function closeStockModal() {
             document.getElementById('stockModal').style.display = 'none';
         }
-        
+
+        // ── SKU Auto-Generate ────────────────────────────────────────────────
+        function regenerateSKU() {
+            var btn = event.currentTarget;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
+            fetch('<?php echo htmlspecialchars($_SERVER["PHP_SELF"] ?? "inventory.php"); ?>?action=generate_sku', {
+                method: 'GET',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+            .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
+            .then(function(data) {
+                if (data.sku) {
+                    document.getElementById('skuField').value = data.sku;
+                }
+            })
+            .catch(function() {
+                // Fallback: generate client-side timestamp SKU
+                var ts = 'SKU-' + String(Date.now()).slice(-5).padStart(5,'0');
+                document.getElementById('skuField').value = ts;
+            })
+            .finally(function() {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-sync-alt"></i> Generate';
+            });
+        }
+
+        // ── Category Custom Input Toggle ─────────────────────────────────────
+        function handleCategoryChange(sel) {
+            var customInput = document.getElementById('categoryCustomInput');
+            var hiddenSel   = document.querySelector('select[name="category"]');
+            if (sel.value === '__custom__') {
+                customInput.style.display = 'block';
+                customInput.required = true;
+                customInput.focus();
+            } else {
+                customInput.style.display = 'none';
+                customInput.required = false;
+                customInput.value = '';
+            }
+        }
+
+        // ── Item Type Custom Input Toggle ────────────────────────────────────
+        function handleItemTypeChange(sel) {
+            var customInput = document.getElementById('itemTypeCustomInput');
+            if (sel.value === '__custom__') {
+                customInput.style.display = 'block';
+                customInput.required = true;
+                customInput.focus();
+            } else {
+                customInput.style.display = 'none';
+                customInput.required = false;
+                customInput.value = '';
+            }
+        }
+
+        // ── Form submit: merge custom category/itemtype back into named fields ─
+        document.addEventListener('DOMContentLoaded', function() {
+            var productForm = document.querySelector('form[action*="create"], form[action*="edit"]');
+            if (productForm) {
+                productForm.addEventListener('submit', function(e) {
+                    // Category
+                    var catSel    = document.getElementById('categorySelect');
+                    var catCustom = document.getElementById('categoryCustomInput');
+                    if (catSel && catSel.value === '__custom__') {
+                        if (!catCustom.value.trim()) {
+                            e.preventDefault();
+                            catCustom.focus();
+                            catCustom.style.borderColor = '#DC2626';
+                            return;
+                        }
+                        // Inject a hidden input with the real value
+                        var hCat = document.createElement('input');
+                        hCat.type  = 'hidden';
+                        hCat.name  = 'category';
+                        hCat.value = catCustom.value.trim();
+                        productForm.appendChild(hCat);
+                        catSel.removeAttribute('name');  // prevent duplicate
+                    }
+
+                    // Item Type
+                    var typeSel    = document.getElementById('itemTypeSelect');
+                    var typeCustom = document.getElementById('itemTypeCustomInput');
+                    if (typeSel && typeSel.value === '__custom__') {
+                        if (!typeCustom.value.trim()) {
+                            e.preventDefault();
+                            typeCustom.focus();
+                            typeCustom.style.borderColor = '#DC2626';
+                            return;
+                        }
+                        var hType = document.createElement('input');
+                        hType.type  = 'hidden';
+                        hType.name  = 'item_type';
+                        hType.value = typeCustom.value.trim().toLowerCase().replace(/\s+/g,'_');
+                        productForm.appendChild(hType);
+                        typeSel.removeAttribute('name');
+                    }
+                });
+            }
+        });
+
+        // ── Close modal on overlay click ─────────────────────────────────────
         document.querySelectorAll('.modal-overlay').forEach(function(modal) {
             modal.addEventListener('click', function(e) {
                 if (e.target === this) {
