@@ -12,13 +12,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && a2enmod rewrite headers \
     && rm -rf /var/lib/apt/lists/*
 
-# Set DocumentRoot to Laravel's public directory
-RUN sed -ri -e 's!/var/www/html!/var/www/html/public!g' /etc/apache2/sites-available/000-default.conf \
-    && sed -ri -e 's!/var/www/html!/var/www/html/public!g' /etc/apache2/apache2.conf
-
-# Support HostForge dynamic $PORT
-RUN sed -ri -e 's/Listen 80/Listen ${PORT:-80}/g' /etc/apache2/ports.conf \
-    && sed -ri -e 's/:80/:${PORT:-80}/g' /etc/apache2/sites-available/000-default.conf
+# Write a clean vhost config:
+#   - DocumentRoot → /var/www/html/public
+#   - AllowOverride All  (required for Laravel's .htaccess / mod_rewrite)
+#   - Port placeholder __PORT__ replaced at runtime by the entrypoint
+RUN printf '<VirtualHost *:__PORT__>\n\
+    DocumentRoot /var/www/html/public\n\
+    <Directory /var/www/html/public>\n\
+        Options -Indexes +FollowSymLinks\n\
+        AllowOverride All\n\
+        Require all granted\n\
+    </Directory>\n\
+    ErrorLog ${APACHE_LOG_DIR}/error.log\n\
+    CustomLog ${APACHE_LOG_DIR}/access.log combined\n\
+</VirtualHost>\n' > /etc/apache2/sites-available/000-default.conf
 
 # Install Composer dependencies (layer cache: only re-runs if composer.json/lock changes)
 COPY laravel-app/composer.* ./
@@ -34,7 +41,7 @@ RUN composer dump-autoload --no-dev --optimize \
     && chown -R www-data:www-data /var/www/html \
     && chmod -R 775 storage bootstrap/cache
 
-# Copy entrypoint (must be COPY'd separately — it lives at repo root, not laravel-app/)
+# Copy entrypoint (lives at repo root, not laravel-app/)
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
