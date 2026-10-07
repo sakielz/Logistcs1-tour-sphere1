@@ -1,3 +1,6 @@
+Fix 1: .dockerignore
+Keep .env.example in the build context:
+
 .git
 .gitignore
 .github
@@ -13,3 +16,60 @@ laravel-app/storage/logs/*
 laravel-app/storage/framework/cache/*
 laravel-app/storage/framework/sessions/*
 laravel-app/storage/framework/views/*
+The ! line has to come after the .env.* line. Also check that laravel-app/.env.example is committed to git.
+
+Fix 2: Dockerfile (recommended)
+This version doesn't need .env.example at all. It also keeps secrets and config caching out of the image.
+
+dockerfile
+FROM php:8.2-apache
+WORKDIR /var/www/html
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git unzip libpng-dev libonig-dev libxml2-dev zip curl ca-certificates gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd \
+    && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer \
+    && a2enmod rewrite headers \
+    && rm -rf /var/lib/apt/lists/*
+RUN sed -ri -e 's!/var/www/html!/var/www/html/public!g' /etc/apache2/sites-available/000-default.conf \
+    && sed -ri -e 's!/var/www/html!/var/www/html/public!g' /etc/apache2/apache2.conf
+COPY laravel-app/composer.* ./
+RUN composer install --no-interaction --no-ansi --no-progress --prefer-dist --optimize-autoloader --no-dev --no-scripts
+COPY laravel-app/ ./
+RUN composer dump-autoload --no-dev --optimize \
+    && npm install --no-fund --no-audit \
+    && npm run build \
+    && rm -rf node_modules \
+    && mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \
+    && chown -R www-data:www-data /var/www/html \
+    && chmod -R 775 storage bootstrap/cache
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+EXPOSE 80
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["apache2-foreground"]
+Create docker-entrypoint.sh at the repo root, next to the Dockerfile, and save it with LF line endings, not CRLF:
+
+sh
+#!/bin/sh
+set -e
+php artisan config:cache
+php artisan route:cache
+php artisan view:cache
+exec "$@"
+The storage/framework/* folders are created in the Dockerfile because the .dockerignore excludes their contents. Laravel fails at runtime if they're missing.
+
+Fix 3: HostForge environment variables
+Set these in HostForge:
+
+APP_KEY: generate it locally with php artisan key:generate --show. It looks like base64:....
+APP_ENV=production
+APP_DEBUG=false
+APP_URL
+DB_CONNECTION, DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD
+Things that may still break
+Vite build needs dev dependencies. npm install installs them, so this is fine. If the build needs PHP packages such as Ziggy, they must not be dev-only.
+Migrations. Run php artisan migrate --force from the HostForge console. You can also add it to the entrypoint, but only if there is a single instance.
+Node 20. Make sure their package.json engines field doesn't require a different version.
+Folder check. If laravel-app/ is a stale duplicate of the root app, they should either point COPY at the right folder or use COPY . ./.

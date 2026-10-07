@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // admin/contracts.php
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
@@ -1144,9 +1144,6 @@ $paginatedContracts = array_slice($contracts, $offset, $itemsPerPage);
                     <input type="text" name="search" class="search-input" 
                            placeholder="Search by contract number, title, or supplier..." 
                            value="<?php echo htmlspecialchars($search); ?>">
-                    
-                    <input type="text" name="supplier_id" placeholder="Supplier name..."
-                           value="<?php echo htmlspecialchars($supplierFilter); ?>">
                     
                     <select name="status">
                         <option value="">All Statuses</option>

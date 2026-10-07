@@ -15,9 +15,12 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+// Ensure helper functions (archiveRecord, restoreRecord, logAudit, etc.) are always available
+require_once __DIR__ . '/function.php';
+
 // ── 1. Session timeout constant (seconds) ───────────────────────────────────
 if (!defined('SESSION_TIMEOUT')) {
-    define('SESSION_TIMEOUT', 120); // 2 minutes
+    define('SESSION_TIMEOUT', 1800); // 30 minutes
 }
 
 // ── 2. Role → allowed pages / modules map ───────────────────────────────────

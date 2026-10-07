@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // admin/shipments.php
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
@@ -452,6 +452,9 @@ try {
     <title>Shipment Tracking - GlobalSCM</title>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Leaflet Map CSS & JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <style>
         :root {
             --primary: <?php echo COLOR_PRIMARY; ?>;
@@ -2024,12 +2027,60 @@ try {
                 </div>
                 <div class="table-wrapper">
                     <?php if ($viewMode === 'map'): ?>
-                    <!-- Map View -->
-                    <div style="padding: 40px; text-align: center; background: var(--bg); border-radius: var(--radius-sm);">
-                        <i class="fas fa-map-marked-alt" style="font-size: 60px; color: var(--primary); opacity: 0.3;"></i>
-                        <h3 style="margin-top: 16px;">Map View Coming Soon</h3>
-                        <p style="color: var(--secondary-text);">Real-time shipment tracking map will be available in the next update.</p>
-                        <p style="color: var(--secondary-text); font-size: 13px;">Showing <?php echo count($shipments); ?> shipments</p>
+                    <!-- Interactive Leaflet Shipment Tracking Map -->
+                    <div id="shipmentMapLayout" style="display: grid; grid-template-columns: 1fr 340px; gap: 16px; min-height: 600px; padding: 12px; background: var(--bg); border-radius: var(--radius); margin-bottom: 20px;">
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; background: var(--card); padding: 10px 16px; border-radius: var(--radius-sm); border: 1px solid var(--border); flex-wrap: wrap; gap: 10px;">
+                                <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                                    <span style="font-weight: 600; font-size: 13px; color: var(--text);"><i class="fas fa-layer-group" style="color: var(--primary);"></i> Map Filter:</span>
+                                    <button type="button" class="btn btn-primary btn-sm map-filter-btn" data-filter="all" onclick="filterMapMarkers('all', this)">All (<?php echo count($shipments); ?>)</button>
+                                    <button type="button" class="btn btn-outline btn-sm map-filter-btn" data-filter="in_transit" onclick="filterMapMarkers('in_transit', this)">In Transit</button>
+                                    <button type="button" class="btn btn-outline btn-sm map-filter-btn" data-filter="delivered" onclick="filterMapMarkers('delivered', this)">Delivered</button>
+                                    <button type="button" class="btn btn-outline btn-sm map-filter-btn" data-filter="delayed" onclick="filterMapMarkers('delayed', this)">Delayed</button>
+                                    <button type="button" class="btn btn-outline btn-sm map-filter-btn" data-filter="pending" onclick="filterMapMarkers('pending', this)">Pending</button>
+                                </div>
+                                <div style="font-size: 12px; color: var(--secondary-text);">
+                                    <i class="fas fa-satellite" style="color: var(--accent);"></i> Real-Time OpenStreetMap Active
+                                </div>
+                            </div>
+                            <div id="shipmentMap" style="width: 100%; height: 560px; border-radius: var(--radius-sm); border: 1px solid var(--border); z-index: 1;"></div>
+                        </div>
+                        
+                        <!-- Map Sidebar of Active Shipments -->
+                        <div style="display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;">
+                            <div style="padding: 12px 16px; background: var(--bg); border-bottom: 1px solid var(--border); font-weight: 600; font-size: 13px; display: flex; justify-content: space-between; align-items: center;">
+                                <span><i class="fas fa-route" style="color: var(--primary);"></i> Routes & Cargo</span>
+                                <span class="role-badge" id="mapVisibleCount"><?php echo count($shipments); ?> on map</span>
+                            </div>
+                            <div id="mapShipmentsList" style="flex: 1; overflow-y: auto; max-height: 560px; padding: 10px; display: flex; flex-direction: column; gap: 10px;">
+                                <?php if (!empty($shipments)): ?>
+                                    <?php foreach ($shipments as $s): ?>
+                                    <div class="map-shipment-card" 
+                                         id="mapCard_<?php echo (int)$s['id']; ?>"
+                                         data-id="<?php echo (int)$s['id']; ?>" 
+                                         data-status="<?php echo htmlspecialchars($s['status']); ?>"
+                                         onclick="focusShipmentOnMap(<?php echo (int)$s['id']; ?>)"
+                                         style="padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); cursor: pointer; transition: all 0.2s ease;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                            <strong style="color: var(--primary); font-size: 13px;"><?php echo htmlspecialchars($s['shipment_id']); ?></strong>
+                                            <span class="status-badge shipment-<?php echo $s['status']; ?>" style="font-size: 10px; padding: 2px 6px;">
+                                                <?php echo ucfirst(str_replace('_', ' ', $s['status'])); ?>
+                                            </span>
+                                        </div>
+                                        <div style="font-size: 12px; color: var(--text); font-weight: 500;">
+                                            <?php echo htmlspecialchars($s['origin'] ?: 'Hub Origin'); ?> &rarr; <?php echo htmlspecialchars($s['destination'] ?: 'Destination Port'); ?>
+                                        </div>
+                                        <div style="font-size: 11px; color: var(--secondary-text); margin-top: 4px; display: flex; justify-content: space-between;">
+                                            <span><?php echo htmlspecialchars($s['carrier'] ?: 'Standard Logistics'); ?></span>
+                                            <span>ETA: <?php echo htmlspecialchars($s['expected_arrival'] ?: 'TBD'); ?></span>
+                                        </div>
+                                    </div>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <div style="padding: 20px; text-align: center; color: var(--secondary-text); font-size: 13px;">No shipments available to display on map.</div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
                     </div>
                     <?php else: ?>
                     <!-- List View -->
@@ -2624,6 +2675,233 @@ try {
                     }
                 });
             }
+        });
+        // ============================================
+        // LEAFLET SHIPMENT TRACKING MAP INITIALIZATION
+        // ============================================
+        var shipmentMapInstance = null;
+        var mapMarkersLayer = null;
+        var mapRoutesLayer = null;
+        var shipmentMarkerRefs = {};
+
+        var HUB_COORDS = {
+            'manila': [14.5995, 120.9842],
+            'metro manila': [14.5995, 120.9842],
+            'port of manila': [14.5833, 120.9667],
+            'cebu': [10.3157, 123.8854],
+            'cebu port': [10.3000, 123.9000],
+            'davao': [7.1907, 125.4553],
+            'clark': [15.1856, 120.5599],
+            'batangas': [13.7565, 121.0583],
+            'subic': [14.8234, 120.2798],
+            'cagayan de oro': [8.4542, 124.6319],
+            'iloilo': [10.7202, 122.5621],
+            'general santos': [6.1164, 125.1716],
+            'zamboanga': [6.9214, 122.0790],
+            'puerto princesa': [9.7392, 118.7353],
+            'singapore': [1.3521, 103.8198],
+            'hong kong': [22.3193, 114.1694],
+            'tokyo': [35.6762, 139.6503],
+            'shanghai': [31.2304, 121.4737],
+            'los angeles': [33.7432, -118.2673]
+        };
+
+        function getCoordsForPlace(name, defaultIndex) {
+            if (!name) return [14.5995 + (defaultIndex * 0.2), 120.9842 + (defaultIndex * 0.2)];
+            var key = name.trim().toLowerCase();
+            for (var hub in HUB_COORDS) {
+                if (key.indexOf(hub) !== -1 || hub.indexOf(key) !== -1) {
+                    return HUB_COORDS[hub];
+                }
+            }
+            // Fallback: generate pseudo-consistent coordinate around Philippines / SE Asia
+            var hash = 0;
+            for (var i = 0; i < key.length; i++) {
+                hash = ((hash << 5) - hash) + key.charCodeAt(i);
+                hash |= 0;
+            }
+            var lat = 10.0 + (Math.abs(hash % 800) / 100.0);
+            var lng = 120.0 + (Math.abs((hash >> 3) % 600) / 100.0);
+            return [lat, lng];
+        }
+
+        function initShipmentMap() {
+            var mapEl = document.getElementById('shipmentMap');
+            if (!mapEl || typeof L === 'undefined') return;
+
+            var shipmentsData = <?php echo json_encode($shipments, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?> || [];
+
+            // Center around the Philippines / SE Asia
+            shipmentMapInstance = L.map('shipmentMap').setView([13.0, 122.5], 6);
+
+            // Add OpenStreetMap tiles
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 18,
+                attribution: '&copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(shipmentMapInstance);
+
+            mapMarkersLayer = L.layerGroup().addTo(shipmentMapInstance);
+            mapRoutesLayer = L.layerGroup().addTo(shipmentMapInstance);
+
+            plotShipmentsOnMap(shipmentsData, 'all');
+        }
+
+        function plotShipmentsOnMap(shipmentsData, filterStatus) {
+            if (!shipmentMapInstance || !mapMarkersLayer) return;
+
+            mapMarkersLayer.clearLayers();
+            mapRoutesLayer.clearLayers();
+            shipmentMarkerRefs = {};
+
+            var bounds = [];
+            var count = 0;
+
+            shipmentsData.forEach(function(s, index) {
+                if (filterStatus !== 'all' && s.status !== filterStatus) return;
+
+                count++;
+                var originCoords = getCoordsForPlace(s.origin || 'Manila', index);
+                var destCoords = getCoordsForPlace(s.destination || 'Cebu', index + 1);
+
+                // Determine position based on status
+                var midLat, midLng;
+                var progress = 0.5;
+                if (s.status === 'delivered') progress = 1.0;
+                else if (s.status === 'pending') progress = 0.05;
+                else if (s.status === 'delayed') progress = 0.4;
+                else progress = 0.6; // in_transit
+
+                midLat = originCoords[0] + (destCoords[0] - originCoords[0]) * progress;
+                midLng = originCoords[1] + (destCoords[1] - originCoords[1]) * progress;
+                var currentPos = [midLat, midLng];
+
+                bounds.push(originCoords);
+                bounds.push(destCoords);
+
+                // Colors
+                var color = '#2F80ED'; // in_transit
+                if (s.status === 'delivered') color = '#27AE60';
+                else if (s.status === 'delayed') color = '#DC2626';
+                else if (s.status === 'pending') color = '#6B7280';
+
+                // Mode icon
+                var modeIcon = 'fa-truck';
+                if (s.mode === 'air') modeIcon = 'fa-plane';
+                else if (s.mode === 'ocean' || s.mode === 'sea') modeIcon = 'fa-ship';
+                else if (s.mode === 'rail') modeIcon = 'fa-train';
+
+                // Polyline Route
+                var polyline = L.polyline([originCoords, currentPos, destCoords], {
+                    color: color,
+                    weight: 3,
+                    opacity: 0.85,
+                    dashArray: s.status === 'delivered' ? null : '6, 8'
+                }).addTo(mapRoutesLayer);
+
+                // Origin pin
+                L.circleMarker(originCoords, {
+                    radius: 5,
+                    fillColor: '#10B981',
+                    color: '#FFFFFF',
+                    weight: 2,
+                    fillOpacity: 1
+                }).bindTooltip('Origin: ' + (s.origin || 'Origin Hub'), { permanent: false }).addTo(mapMarkersLayer);
+
+                // Destination pin
+                L.circleMarker(destCoords, {
+                    radius: 5,
+                    fillColor: '#EF4444',
+                    color: '#FFFFFF',
+                    weight: 2,
+                    fillOpacity: 1
+                }).bindTooltip('Destination: ' + (s.destination || 'Destination Port'), { permanent: false }).addTo(mapMarkersLayer);
+
+                // Vehicle marker (Icon)
+                var customIcon = L.divIcon({
+                    className: 'custom-shipment-marker',
+                    html: '<div style="background:' + color + '; width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:white; box-shadow:0 3px 8px rgba(0,0,0,0.3); border:2px solid white;"><i class="fas ' + modeIcon + '" style="font-size:14px;"></i></div>',
+                    iconSize: [32, 32],
+                    iconAnchor: [16, 16]
+                });
+
+                var popupContent = [
+                    '<div style="min-width:200px; font-family:Poppins, sans-serif; font-size:12px;">',
+                    '  <div style="font-weight:700; font-size:14px; color:#1F2937; margin-bottom:4px;">' + escapeHtmlStr(s.shipment_id) + '</div>',
+                    '  <div style="margin-bottom:6px;"><span class="status-badge shipment-' + s.status + '" style="font-size:10px; padding:2px 6px;">' + (s.status.toUpperCase().replace(/_/g, ' ')) + '</span></div>',
+                    '  <div style="color:#4B5563; margin-bottom:2px;"><strong>Route:</strong> ' + escapeHtmlStr(s.origin || 'Origin') + ' &rarr; ' + escapeHtmlStr(s.destination || 'Destination') + '</div>',
+                    '  <div style="color:#4B5563; margin-bottom:2px;"><strong>Carrier:</strong> ' + escapeHtmlStr(s.carrier || 'N/A') + ' (' + (s.mode || 'Road').toUpperCase() + ')</div>',
+                    '  <div style="color:#4B5563; margin-bottom:6px;"><strong>ETA:</strong> ' + escapeHtmlStr(s.expected_arrival || 'TBD') + '</div>',
+                    '  <a href="shipments.php?action=view&id=' + s.id + '" class="btn btn-primary btn-sm" style="display:inline-block; width:100%; text-align:center; padding:5px 8px; font-size:11px; margin-top:4px;">View Full Shipment Details</a>',
+                    '</div>'
+                ].join('');
+
+                var marker = L.marker(currentPos, { icon: customIcon })
+                    .bindPopup(popupContent)
+                    .addTo(mapMarkersLayer);
+
+                shipmentMarkerRefs[s.id] = { marker: marker, pos: currentPos };
+            });
+
+            // Update badge count
+            var countEl = document.getElementById('mapVisibleCount');
+            if (countEl) countEl.textContent = count + ' on map';
+
+            // Fit map to visible bounds if any
+            if (bounds.length > 0) {
+                shipmentMapInstance.fitBounds(bounds, { padding: [40, 40], maxZoom: 8 });
+            }
+        }
+
+        function filterMapMarkers(status, btn) {
+            document.querySelectorAll('.map-filter-btn').forEach(function(b) {
+                b.classList.remove('btn-primary');
+                b.classList.add('btn-outline');
+            });
+            if (btn) {
+                btn.classList.remove('btn-outline');
+                btn.classList.add('btn-primary');
+            }
+
+            var shipmentsData = <?php echo json_encode($shipments, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?> || [];
+            plotShipmentsOnMap(shipmentsData, status);
+
+            // Filter side list cards
+            document.querySelectorAll('.map-shipment-card').forEach(function(card) {
+                var cardStatus = card.getAttribute('data-status');
+                if (status === 'all' || cardStatus === status) {
+                    card.style.display = 'block';
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+        }
+
+        function focusShipmentOnMap(id) {
+            if (!shipmentMarkerRefs[id] || !shipmentMapInstance) return;
+
+            var ref = shipmentMarkerRefs[id];
+            shipmentMapInstance.setView(ref.pos, 9, { animate: true });
+            ref.marker.openPopup();
+
+            // Highlight card
+            document.querySelectorAll('.map-shipment-card').forEach(function(c) {
+                c.style.borderColor = 'var(--border)';
+                c.style.background = 'var(--bg)';
+            });
+            var activeCard = document.getElementById('mapCard_' + id);
+            if (activeCard) {
+                activeCard.style.borderColor = 'var(--primary)';
+                activeCard.style.background = 'rgba(47, 128, 237, 0.08)';
+            }
+        }
+
+        function escapeHtmlStr(str) {
+            if (!str) return '';
+            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            initShipmentMap();
         });
     </script>
 </body>

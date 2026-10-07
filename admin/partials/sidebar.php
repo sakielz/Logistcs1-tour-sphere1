@@ -36,7 +36,7 @@ try {
 // Get current page for active state
 $currentPage = basename($_SERVER['PHP_SELF']);
 ?>
-<!-- Session Inactivity Timeout (2 minutes) -->
+<!-- Session Inactivity Timeout (30 minutes) -->
 <script src="../assets/js/session-timeout.js" defer></script>
 
 <!-- Tailwind CSS (Scoped with Preflight disabled to preserve existing UI) -->
@@ -1201,8 +1201,11 @@ $currentPage = basename($_SERVER['PHP_SELF']);
         }
     }
 
-    // Restore section states
+    // Restore section states and sidebar scroll position
     document.addEventListener('DOMContentLoaded', function() {
+        var sidebar = document.getElementById('sidebar');
+
+        // Restore section states
         document.querySelectorAll('.nav-section-title').forEach(function(title) {
             var sectionText = title.textContent.trim();
             var state = localStorage.getItem('sidebar_section_' + sectionText);
@@ -1215,6 +1218,37 @@ $currentPage = basename($_SERVER['PHP_SELF']);
                 }
             }
         });
+
+        // ── Sidebar Scroll Position Persistence ──
+        if (sidebar) {
+            var savedScroll = sessionStorage.getItem('sidebar_scroll_position');
+            if (savedScroll !== null) {
+                sidebar.scrollTop = parseInt(savedScroll, 10);
+            } else {
+                // If no saved position, ensure the active module is visible in viewport
+                var activeItem = sidebar.querySelector('.nav-item.active');
+                if (activeItem) {
+                    activeItem.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+                }
+            }
+
+            // Save on scroll
+            sidebar.addEventListener('scroll', function() {
+                sessionStorage.setItem('sidebar_scroll_position', sidebar.scrollTop);
+            }, { passive: true });
+
+            // Save on clicking any link inside the sidebar
+            sidebar.querySelectorAll('a').forEach(function(link) {
+                link.addEventListener('click', function() {
+                    sessionStorage.setItem('sidebar_scroll_position', sidebar.scrollTop);
+                });
+            });
+
+            // Save on beforeunload
+            window.addEventListener('beforeunload', function() {
+                sessionStorage.setItem('sidebar_scroll_position', sidebar.scrollTop);
+            });
+        }
     });
 
     // ============================================

@@ -2,20 +2,20 @@
  * assets/js/session-timeout.js
  * ────────────────────────────────────────────────────────────────────────
  * Client-side inactivity session timeout — mirrors the server-side
- * SESSION_TIMEOUT of 120 seconds (2 minutes).
+ * SESSION_TIMEOUT of 1800 seconds (30 minutes).
  *
  * Behaviour:
  *  • Tracks mouse, keyboard, touch and scroll events as "activity".
- *  • At T-30 s (90 s of idle) shows a countdown warning modal.
- *  • At T=0 (120 s of idle) logs the user out automatically.
+ *  • At T-60 s (1740 s of idle) shows a countdown warning modal.
+ *  • At T=0 (1800 s of idle) logs the user out automatically.
  *  • Any activity resets the timer AND sends a server-side ping.
  * ────────────────────────────────────────────────────────────────────────
  */
 (function () {
     'use strict';
 
-    var TIMEOUT_SECONDS = 120;   // must match PHP SESSION_TIMEOUT
-    var WARN_BEFORE     = 30;    // show warning this many seconds before expiry
+    var TIMEOUT_SECONDS = 1800;  // must match PHP SESSION_TIMEOUT (30 minutes)
+    var WARN_BEFORE     = 60;    // show warning 60 seconds before expiry
     var PING_INTERVAL   = 45000; // ping server every 45 s while user is active (ms)
 
     var idleSeconds    = 0;
