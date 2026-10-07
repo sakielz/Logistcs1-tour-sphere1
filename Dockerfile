@@ -37,6 +37,8 @@ RUN composer dump-autoload --no-dev --optimize \
     && npm install --no-fund --no-audit \
     && npm run build \
     && rm -rf node_modules \
+    # Symlink root-level assets/ into public/ so /assets/... URLs work
+    && ln -sfn /var/www/html/assets /var/www/html/public/assets \
     && mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \
     && chown -R www-data:www-data /var/www/html \
     && chmod -R 775 storage bootstrap/cache
