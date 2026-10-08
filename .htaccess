@@ -8,6 +8,9 @@
     # RewriteCond %{HTTPS} off
     # RewriteRule ^(.*)$ https://%{HTTP_HOST}/$1 [R=301,L]
     
+    # Health check endpoint for Render / Docker
+    RewriteRule ^up/?$ up.php [L]
+    
     # Redirect to login if not logged in
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteCond %{REQUEST_FILENAME} !-d
