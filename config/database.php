@@ -65,7 +65,7 @@ $username = getenv('DB_USERNAME') ?: ($env['DB_USERNAME'] ?? 'root');
 $password = getenv('DB_PASSWORD') ?: ($env['DB_PASSWORD'] ?? '');
 
 // Support Supabase / cloud database connection URLs (DB_URL / DATABASE_URL)
-$dbUrl = getenv('DB_URL') ?: (getenv('DATABASE_URL') ?: ($env['DB_URL'] ?? ($env['DATABASE_URL'] ?? null)));
+$dbUrl = 'postgresql://postgres.zuwwnhwhdhtunigajswd:WrT2AyxJF3ZHDw8F@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres';
 if (!empty($dbUrl)) {
     $parsedUrl = parse_url($dbUrl);
     if ($parsedUrl) {
@@ -966,6 +966,42 @@ require_once $rootDir . '/includes/function.php';
 
 $GLOBALS['pdo'] = $pdo;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TEMPORARY LOGIN BYPASS
+// Set AUTH_BYPASS=true in .env to skip the login screen. Every request is
+// automatically signed in as the first active, non-archived admin account in
+// the database (a real row, so created_by / audit_logs foreign keys stay valid).
+// !! Set AUTH_BYPASS=false (or remove it) to re-enable the security login. !!
+// ─────────────────────────────────────────────────────────────────────────────
+if (!defined('AUTH_BYPASS')) {
+    define('AUTH_BYPASS', in_array(strtolower((string) env('AUTH_BYPASS', 'false')), ['1', 'true', 'yes', 'on'], true));
+}
+
+if (AUTH_BYPASS && $pdo instanceof PDO && empty($_SESSION['user_id'])) {
+    try {
+        $bypassUser = $pdo->query(
+            "SELECT id, username, email, role, full_name FROM users
+             WHERE role = 'admin' AND is_active = true AND is_archived = false
+             ORDER BY id LIMIT 1"
+        )->fetch(PDO::FETCH_ASSOC);
+
+        if ($bypassUser) {
+            unset($_SESSION['2fa_pending_user']);
+            $_SESSION['user_id']       = $bypassUser['id'];
+            $_SESSION['username']      = $bypassUser['username'];
+            $_SESSION['role']          = $bypassUser['role'];
+            $_SESSION['full_name']     = $bypassUser['full_name'];
+            $_SESSION['email']         = $bypassUser['email'];
+            $_SESSION['last_activity'] = time();
+            $_SESSION['auth_bypass']   = true;
+        } else {
+            error_log('[AUTH_BYPASS] No active admin user found in the users table; bypass could not sign in.');
+        }
+    } catch (Throwable $e) {
+        error_log('[AUTH_BYPASS] Failed to load bypass admin: ' . $e->getMessage());
+    }
+}
+
 $config = [
     'default' => $driver,
     'connections' => [
@@ -1016,9 +1052,9 @@ $config = [
         ],
         'pgsql' => [
             'driver' => 'pgsql',
-            'url' => getenv('DB_URL') ?: ($env['DB_URL'] ?? null),
+            'url' => $dbUrl ?: (getenv('DB_URL') ?: ($env['DB_URL'] ?? null)),
             'host' => $host,
-            'port' => getenv('DB_PORT') ?: ($env['DB_PORT'] ?? '5432'),
+            'port' => $port,
             'database' => $dbName,
             'username' => $username,
             'password' => $password,

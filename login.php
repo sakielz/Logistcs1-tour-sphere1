@@ -11,6 +11,12 @@ if (!function_exists('getTheme')) {
 
 $totpService = new \App\Services\TotpService();
 
+// Login bypass active (AUTH_BYPASS=true in .env) – go straight to the dashboard
+if (defined('AUTH_BYPASS') && AUTH_BYPASS && isLoggedIn()) {
+    header('Location: admin/dashboard.php');
+    exit();
+}
+
 // Handle cancellation of 2FA challenge
 if (isset($_GET['cancel_2fa'])) {
     unset($_SESSION['2fa_pending_user']);
