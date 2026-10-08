@@ -697,16 +697,47 @@ try {
 
         initializeSqliteDatabase($pdo);
     } elseif (in_array(strtolower($driver), ['pgsql', 'postgres', 'postgresql'])) {
-        $dsnPort = !empty($port) ? $port : '6543';
+        $dsnPort = !empty($port) ? $port : (strpos($host, 'supabase') !== false ? '6543' : '5432');
         $dsn = "pgsql:host={$host};port={$dsnPort};dbname={$dbName}";
-        if (strpos($host, 'supabase') !== false || getenv('DB_SSLMODE') === 'require' || empty(getenv('DB_SSLMODE'))) {
+
+        $isInternal = (
+            str_ends_with($host, '.internal') ||
+            $host === 'localhost' ||
+            $host === '127.0.0.1' ||
+            str_starts_with($host, '10.') ||
+            str_starts_with($host, '172.') ||
+            str_starts_with($host, '192.168.')
+        );
+        $configuredSsl = getenv('DB_SSLMODE') ?: ($env['DB_SSLMODE'] ?? null);
+
+        if ($configuredSsl) {
+            $dsn .= ";sslmode={$configuredSsl}";
+        } elseif (strpos($host, 'supabase') !== false) {
             $dsn .= ";sslmode=require";
+        } elseif ($isInternal) {
+            $dsn .= ";sslmode=disable";
+        } else {
+            $dsn .= ";sslmode=prefer";
         }
-        $pdo = new PDO($dsn, $username, $password, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_EMULATE_PREPARES => false,
-        ]);
+
+        try {
+            $pdo = new PDO($dsn, $username, $password, [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES => false,
+            ]);
+        } catch (PDOException $pdoEx) {
+            if (strpos($pdoEx->getMessage(), 'server does not support SSL') !== false) {
+                $plainDsn = preg_replace('/;sslmode=[^;]+/', '', $dsn) . ';sslmode=disable';
+                $pdo = new PDO($plainDsn, $username, $password, [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                    PDO::ATTR_EMULATE_PREPARES => false,
+                ]);
+            } else {
+                throw $pdoEx;
+            }
+        }
 
         initializePostgresDatabase($pdo);
     } else {
