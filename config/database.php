@@ -95,9 +95,29 @@ if (!function_exists('initializeSqliteDatabase')) {
             full_name TEXT NOT NULL,
             is_active INTEGER DEFAULT 1,
             is_archived INTEGER DEFAULT 0,
+            two_factor_secret TEXT,
+            two_factor_enabled INTEGER DEFAULT 0,
+            two_factor_confirmed_at TEXT,
+            two_factor_recovery_codes_generated_at TEXT,
+            two_factor_time_offset INTEGER DEFAULT 0,
             last_login TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS user_recovery_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            code_hash TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS two_factor_rate_limits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            identifier TEXT NOT NULL,
+            attempt_time INTEGER NOT NULL
         );");
 
         $pdo->exec("CREATE TABLE IF NOT EXISTS system_settings (
@@ -578,6 +598,11 @@ if ($pdo instanceof PDO) {
         ['purchase_requisitions', 'payment_method', 'VARCHAR(30)'],
         ['warehouses', 'group_id', 'INTEGER'],
         ['purchase_order_items', 'received_quantity', 'INTEGER DEFAULT 0'],
+        ['users', 'two_factor_secret', 'TEXT'],
+        ['users', 'two_factor_enabled', 'INTEGER DEFAULT 0'],
+        ['users', 'two_factor_confirmed_at', 'DATETIME'],
+        ['users', 'two_factor_recovery_codes_generated_at', 'DATETIME'],
+        ['users', 'two_factor_time_offset', 'INTEGER DEFAULT 0'],
     ] as [$table, $column, $definition]) {
         try {
             $pdo->query("SELECT $column FROM $table WHERE 1 = 0");
@@ -585,6 +610,54 @@ if ($pdo instanceof PDO) {
             $pdo->exec("ALTER TABLE $table ADD COLUMN $column $definition");
         }
     }
+
+    if (in_array($databaseDriver, ['mysql', 'mariadb'], true)) {
+        $recoveryCodesDDL = "CREATE TABLE IF NOT EXISTS user_recovery_codes (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            code_hash VARCHAR(255) NOT NULL,
+            used_at TIMESTAMP NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_user_recovery_user (user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )";
+        $rateLimitsDDL = "CREATE TABLE IF NOT EXISTS two_factor_rate_limits (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            identifier VARCHAR(150) NOT NULL,
+            attempt_time INT NOT NULL,
+            INDEX idx_2fa_rate_limit (identifier, attempt_time)
+        )";
+    } elseif (in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true)) {
+        $recoveryCodesDDL = "CREATE TABLE IF NOT EXISTS user_recovery_codes (
+            id BIGSERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            code_hash VARCHAR(255) NOT NULL,
+            used_at TIMESTAMP NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )";
+        $rateLimitsDDL = "CREATE TABLE IF NOT EXISTS two_factor_rate_limits (
+            id BIGSERIAL PRIMARY KEY,
+            identifier VARCHAR(150) NOT NULL,
+            attempt_time INTEGER NOT NULL
+        )";
+    } else {
+        $recoveryCodesDDL = "CREATE TABLE IF NOT EXISTS user_recovery_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            code_hash TEXT NOT NULL,
+            used_at TEXT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )";
+        $rateLimitsDDL = "CREATE TABLE IF NOT EXISTS two_factor_rate_limits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            identifier TEXT NOT NULL,
+            attempt_time INTEGER NOT NULL
+        )";
+    }
+    $pdo->exec($recoveryCodesDDL);
+    $pdo->exec($rateLimitsDDL);
 
     if (in_array($databaseDriver, ['mysql', 'mariadb'], true)) {
         $privacyAcknowledgementDDL = "CREATE TABLE IF NOT EXISTS supplier_privacy_acknowledgements (

@@ -19,12 +19,33 @@ CREATE TABLE IF NOT EXISTS `users` (
     `full_name` VARCHAR(255) NOT NULL,
     `is_active` BOOLEAN DEFAULT TRUE,
     `is_archived` BOOLEAN DEFAULT FALSE,
+    `two_factor_secret` TEXT NULL,
+    `two_factor_enabled` BOOLEAN DEFAULT FALSE,
+    `two_factor_confirmed_at` DATETIME NULL,
+    `two_factor_recovery_codes_generated_at` DATETIME NULL,
     `last_login` DATETIME,
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX `idx_email` (`email`),
     INDEX `idx_role` (`role`),
     INDEX `idx_archived` (`is_archived`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `user_recovery_codes` (
+    `id` INT PRIMARY KEY AUTO_INCREMENT,
+    `user_id` INT NOT NULL,
+    `code_hash` VARCHAR(255) NOT NULL,
+    `used_at` DATETIME NULL,
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE,
+    INDEX `idx_recovery_user` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `two_factor_rate_limits` (
+    `id` INT PRIMARY KEY AUTO_INCREMENT,
+    `identifier` VARCHAR(150) NOT NULL,
+    `attempt_time` INT NOT NULL,
+    INDEX `idx_2fa_rate_limit` (`identifier`, `attempt_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `user_sessions` (

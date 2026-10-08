@@ -3,9 +3,23 @@
 require_once __DIR__ . '/config/database.php';
 require_once __DIR__ . '/includes/function.php';
 
+require_once __DIR__ . '/app/Services/TotpService.php';
+
 if (!function_exists('getTheme')) {
     function getTheme() { return 'light'; }
 }
+
+$totpService = new \App\Services\TotpService();
+
+// Handle cancellation of 2FA challenge
+if (isset($_GET['cancel_2fa'])) {
+    unset($_SESSION['2fa_pending_user']);
+    header('Location: login.php');
+    exit();
+}
+
+$is2FaPending = isset($_SESSION['2fa_pending_user']) && !empty($_SESSION['2fa_pending_user']);
+$pendingUser = $is2FaPending ? $_SESSION['2fa_pending_user'] : null;
 
 // Define color constants if not already defined
 if (!defined('COLOR_PRIMARY'))               define('COLOR_PRIMARY', '#1A6FD4');
@@ -24,61 +38,156 @@ if (!defined('COLOR_DARK_BORDER'))           define('COLOR_DARK_BORDER', '#1F293
 
 $theme = function_exists('getTheme') ? getTheme() : 'light';
 
-// ── Handle POST login ────────────────────────────────────────────────────────
+// ── Handle POST login & 2FA Verification ────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email    = isset($_POST['email'])    ? trim($_POST['email'])    : '';
-    $password = isset($_POST['password']) ? $_POST['password']       : '';
+    // ── CASE A: Processing 2FA Challenge ──
+    if ($is2FaPending && $pendingUser) {
+        $identifier = 'user_' . $pendingUser['id'];
 
-    if (empty($email) || empty($password)) {
-        $error = 'Please enter both email / username and password.';
-    } else {
-        try {
-            $loginIdentifier = trim($email);
-            $sql  = "SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(:login)) OR LOWER(TRIM(username)) = LOWER(TRIM(:login)) LIMIT 1";
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute([':login' => $loginIdentifier]);
-            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($totpService->isRateLimited($pdo, $identifier)) {
+            $error = 'Too many failed 2FA verification attempts. Verification is temporarily locked for 60 seconds to protect against brute-force attacks.';
+        } else {
+            $authMethod = $_POST['auth_method'] ?? 'totp';
 
-            if (!$user) {
-                $error = 'No account found with that email address or username.';
-                logAudit(null, 'login_failed', 'auth', "Login failed - not found: $email");
-            } elseif (!(bool)$user['is_active']) {
-                $error = 'This account is inactive. Please contact your Administrator.';
-                logAudit(null, 'login_failed', 'auth', "Login failed - inactive: $email");
-            } elseif ((bool)$user['is_archived']) {
-                $error = 'This account is archived. Please contact your Administrator.';
-                logAudit(null, 'login_failed', 'auth', "Login failed - archived: $email");
-            } elseif (empty($user['password'])) {
-                $error = 'This account has no password set. Contact your Administrator.';
-                logAudit(null, 'login_failed', 'auth', "Login failed - no password: $email");
-            } elseif (!password_verify($password, $user['password'])) {
-                $error = 'Incorrect password. Please try again.';
-                logAudit(null, 'login_failed', 'auth', "Login failed - wrong password: $email");
+            if ($authMethod === 'recovery') {
+                $recoveryCode = trim((string)($_POST['recovery_code'] ?? ''));
+                if (empty($recoveryCode)) {
+                    $error = 'Please enter your emergency recovery code.';
+                } elseif ($totpService->verifyAndBurnRecoveryCode($pdo, (int)$pendingUser['id'], $recoveryCode)) {
+                    $totpService->clearRateLimits($pdo, $identifier);
+                    if (session_status() === PHP_SESSION_ACTIVE) {
+                        session_regenerate_id(true);
+                    }
+                    $_SESSION['user_id']       = $pendingUser['id'];
+                    $_SESSION['username']      = $pendingUser['username'];
+                    $_SESSION['role']          = $pendingUser['role'];
+                    $_SESSION['full_name']     = $pendingUser['full_name'];
+                    $_SESSION['email']         = $pendingUser['email'];
+                    $_SESSION['last_activity'] = time();
+                    unset($_SESSION['2fa_pending_user']);
+
+                    $pdo->prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?")->execute([$pendingUser['id']]);
+                    logAudit($pendingUser['id'], 'login', 'auth', 'User authenticated via single-use emergency recovery code');
+
+                    header('Location: admin/dashboard.php');
+                    exit();
+                } else {
+                    $totpService->recordFailedAttempt($pdo, $identifier, (int)$pendingUser['id']);
+                    $error = 'Invalid or previously used emergency recovery code.';
+                }
             } else {
-                if (session_status() === PHP_SESSION_ACTIVE) {
-                    session_regenerate_id(true);
-                }
-                $_SESSION['user_id']       = $user['id'];
-                $_SESSION['username']      = $user['username'];
-                $_SESSION['role']          = $user['role'];
-                $_SESSION['full_name']     = $user['full_name'];
-                $_SESSION['email']         = $user['email'];
-                $_SESSION['last_activity'] = time();
+                $otpCode = trim((string)($_POST['otp_code'] ?? ''));
+                if (empty($otpCode)) {
+                    $error = 'Please enter your 6-digit Google Authenticator code.';
+                } else {
+                    $plainSecret = '';
+                    try {
+                        $plainSecret = $totpService->decryptSecret((string)$pendingUser['two_factor_secret']);
+                    } catch (Throwable $e) {
+                        $plainSecret = (string)$pendingUser['two_factor_secret'];
+                    }
 
-                if (password_needs_rehash($user['password'], PASSWORD_DEFAULT)) {
-                    $newHash = password_hash($password, PASSWORD_DEFAULT);
-                    $pdo->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([$newHash, $user['id']]);
-                }
-                $pdo->prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?")->execute([$user['id']]);
-                logAudit($user['id'], 'login', 'auth', 'User logged in');
+                    $userOffset = (int)($pendingUser['two_factor_time_offset'] ?? 0);
+                    $isValid = $totpService->verifyCode($plainSecret, $otpCode, \App\Services\TotpService::DRIFT_WINDOW, $userOffset);
 
-                header('Location: admin/dashboard.php');
-                exit();
+                    if (!$isValid) {
+                        // Adaptive drift fallback (handles local PC clock shifts)
+                        $adaptiveSlice = $totpService->findAdaptiveSliceOffset($plainSecret, $otpCode, 200);
+                        if ($adaptiveSlice !== null) {
+                            $isValid = true;
+                            $newOffset = - ($adaptiveSlice * \App\Services\TotpService::PERIOD);
+                            $pdo->prepare("UPDATE users SET two_factor_time_offset = ? WHERE id = ?")->execute([$newOffset, $pendingUser['id']]);
+                        }
+                    }
+
+                    if ($isValid) {
+                        $totpService->clearRateLimits($pdo, $identifier);
+                        if (session_status() === PHP_SESSION_ACTIVE) {
+                            session_regenerate_id(true);
+                        }
+                        $_SESSION['user_id']       = $pendingUser['id'];
+                        $_SESSION['username']      = $pendingUser['username'];
+                        $_SESSION['role']          = $pendingUser['role'];
+                        $_SESSION['full_name']     = $pendingUser['full_name'];
+                        $_SESSION['email']         = $pendingUser['email'];
+                        $_SESSION['last_activity'] = time();
+                        unset($_SESSION['2fa_pending_user']);
+
+                        $pdo->prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?")->execute([$pendingUser['id']]);
+                        logAudit($pendingUser['id'], 'login', 'auth', 'User authenticated via Google Authenticator 2FA');
+
+                        header('Location: admin/dashboard.php');
+                        exit();
+                    } else {
+                        $totpService->recordFailedAttempt($pdo, $identifier, (int)$pendingUser['id']);
+                        $error = 'Invalid 6-digit code. Please check your authenticator clock and try again.';
+                    }
+                }
             }
-        } catch (PDOException $e) {
-            $error = 'Database error: ' . $e->getMessage();
-        } catch (Throwable $e) {
-            $error = 'Login error: ' . $e->getMessage();
+        }
+    } else {
+        // ── CASE B: Standard Password Verification ──
+        $email    = isset($_POST['email'])    ? trim($_POST['email'])    : '';
+        $password = isset($_POST['password']) ? $_POST['password']       : '';
+
+        if (empty($email) || empty($password)) {
+            $error = 'Please enter both email / username and password.';
+        } else {
+            try {
+                $loginIdentifier = trim($email);
+                $sql  = "SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(:login)) OR LOWER(TRIM(username)) = LOWER(TRIM(:login)) LIMIT 1";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([':login' => $loginIdentifier]);
+                $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+                if (!$user) {
+                    $error = 'No account found with that email address or username.';
+                    logAudit(null, 'login_failed', 'auth', "Login failed - not found: $email");
+                } elseif (!(bool)$user['is_active']) {
+                    $error = 'This account is inactive. Please contact your Administrator.';
+                    logAudit(null, 'login_failed', 'auth', "Login failed - inactive: $email");
+                } elseif ((bool)$user['is_archived']) {
+                    $error = 'This account is archived. Please contact your Administrator.';
+                    logAudit(null, 'login_failed', 'auth', "Login failed - archived: $email");
+                } elseif (empty($user['password'])) {
+                    $error = 'This account has no password set. Contact your Administrator.';
+                    logAudit(null, 'login_failed', 'auth', "Login failed - no password: $email");
+                } elseif (!password_verify($password, $user['password'])) {
+                    $error = 'Incorrect password. Please try again.';
+                    logAudit(null, 'login_failed', 'auth', "Login failed - wrong password: $email");
+                } else {
+                    // Password is correct. Check if 2FA is enabled!
+                    if (!empty($user['two_factor_enabled']) && !empty($user['two_factor_secret'])) {
+                        $_SESSION['2fa_pending_user'] = $user;
+                        $is2FaPending = true;
+                        $pendingUser = $user;
+                    } else {
+                        if (session_status() === PHP_SESSION_ACTIVE) {
+                            session_regenerate_id(true);
+                        }
+                        $_SESSION['user_id']       = $user['id'];
+                        $_SESSION['username']      = $user['username'];
+                        $_SESSION['role']          = $user['role'];
+                        $_SESSION['full_name']     = $user['full_name'];
+                        $_SESSION['email']         = $user['email'];
+                        $_SESSION['last_activity'] = time();
+
+                        if (password_needs_rehash($user['password'], PASSWORD_DEFAULT)) {
+                            $newHash = password_hash($password, PASSWORD_DEFAULT);
+                            $pdo->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([$newHash, $user['id']]);
+                        }
+                        $pdo->prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?")->execute([$user['id']]);
+                        logAudit($user['id'], 'login', 'auth', 'User logged in');
+
+                        header('Location: admin/dashboard.php');
+                        exit();
+                    }
+                }
+            } catch (PDOException $e) {
+                $error = 'Database error: ' . $e->getMessage();
+            } catch (Throwable $e) {
+                $error = 'Login error: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -518,54 +627,151 @@ if (isset($_GET['timeout']) && $_GET['timeout'] === '1') {
         </div>
         <?php endif; ?>
 
-        <!-- Login Form -->
-        <p class="form-heading">Welcome back 👋</p>
-
-        <form method="POST" action="" id="loginForm" novalidate>
-            <div class="form-group">
-                <label class="form-label" for="email">Email or Username</label>
-                <div class="input-wrapper">
-                    <i class="fas fa-envelope input-icon"></i>
-                    <input
-                        type="text"
-                        id="email"
-                        name="email"
-                        class="form-input"
-                        placeholder="you@toursphere.com"
-                        value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>"
-                        autocomplete="username"
-                        required
-                    >
+        <?php if ($is2FaPending && $pendingUser): ?>
+            <!-- 2FA Verification Challenge Form -->
+            <div style="text-align: center; margin-bottom: 20px;">
+                <div style="width: 52px; height: 52px; border-radius: 14px; background: linear-gradient(135deg, rgba(26,111,212,0.2), rgba(0,194,255,0.25)); border: 1px solid rgba(0,194,255,0.4); display: inline-flex; align-items: center; justify-content: center; font-size: 22px; color: #00C2FF; margin-bottom: 10px;">
+                    <i class="fas fa-shield-alt"></i>
                 </div>
+                <p class="form-heading" style="margin: 0; font-size: 18px; font-weight: 700;">Two-Factor Authentication</p>
+                <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">
+                    Confirm verification code for <strong style="color: #00C2FF;"><?php echo htmlspecialchars($pendingUser['email']); ?></strong>
+                </p>
             </div>
 
-            <div class="form-group">
-                <label class="form-label" for="password">Password</label>
-                <div class="input-wrapper">
-                    <i class="fas fa-lock input-icon"></i>
-                    <input
-                        type="password"
-                        id="password"
-                        name="password"
-                        class="form-input"
-                        placeholder="Enter your password"
-                        autocomplete="current-password"
-                        required
-                    >
-                    <button type="button" class="pw-toggle" id="pwToggle" aria-label="Toggle password visibility">
-                        <i class="fas fa-eye" id="pwToggleIcon"></i>
-                    </button>
+            <form method="POST" action="" id="loginForm" novalidate>
+                <input type="hidden" name="auth_method" id="authMethod" value="totp">
+
+                <!-- TOTP Code Input -->
+                <div id="totpSection" class="form-group">
+                    <label class="form-label" for="otp_code">6-Digit Authenticator Code</label>
+                    <div class="input-wrapper">
+                        <i class="fas fa-mobile-alt input-icon"></i>
+                        <input
+                            type="text"
+                            id="otp_code"
+                            name="otp_code"
+                            class="form-input"
+                            placeholder="000000"
+                            maxlength="6"
+                            pattern="[0-9]{6}"
+                            autocomplete="one-time-code"
+                            style="letter-spacing: 0.25em; font-size: 18px; font-weight: 700; text-align: center;"
+                            autofocus
+                        >
+                    </div>
+                    <span style="font-size: 11px; color: var(--text-muted); display: block; margin-top: 4px;">
+                        Enter code from Google Authenticator
+                    </span>
                 </div>
-            </div>
 
+                <!-- Emergency Recovery Code Input (Hidden by default) -->
+                <div id="recoverySection" class="form-group" style="display: none;">
+                    <label class="form-label" for="recovery_code">Emergency Recovery Code</label>
+                    <div class="input-wrapper">
+                        <i class="fas fa-key input-icon"></i>
+                        <input
+                            type="text"
+                            id="recovery_code"
+                            name="recovery_code"
+                            class="form-input"
+                            placeholder="TRVL-XXXX-XX"
+                            style="text-transform: uppercase; font-family: monospace; font-weight: 700;"
+                        >
+                    </div>
+                    <span style="font-size: 11px; color: var(--text-muted); display: block; margin-top: 4px;">
+                        Single-use emergency access code
+                    </span>
+                </div>
 
-            <button type="submit" class="btn-login" id="loginBtn">
-                <span class="spinner"></span>
-                <span class="btn-text">
-                    <i class="fas fa-sign-in-alt"></i>&nbsp; Sign In
-                </span>
-            </button>
-        </form>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; font-size: 12px;">
+                    <a href="javascript:void(0)" id="toggleAuthMethodBtn" onclick="toggleAuthMode()" style="color: #00C2FF; text-decoration: none; font-weight: 600;">
+                        <i class="fas fa-key"></i> Use an emergency recovery code
+                    </a>
+                    <a href="login.php?cancel_2fa=1" style="color: var(--text-muted); text-decoration: none;">
+                        Cancel
+                    </a>
+                </div>
+
+                <button type="submit" class="btn-login" id="loginBtn">
+                    <span class="spinner"></span>
+                    <span class="btn-text">
+                        <i class="fas fa-check-circle"></i>&nbsp; Verify &amp; Sign In
+                    </span>
+                </button>
+            </form>
+
+            <script>
+                function toggleAuthMode() {
+                    const method = document.getElementById('authMethod');
+                    const totpSec = document.getElementById('totpSection');
+                    const recSec = document.getElementById('recoverySection');
+                    const btn = document.getElementById('toggleAuthMethodBtn');
+
+                    if (method.value === 'totp') {
+                        method.value = 'recovery';
+                        totpSec.style.display = 'none';
+                        recSec.style.display = 'block';
+                        btn.innerHTML = '<i class="fas fa-mobile-alt"></i> Use 6-digit Authenticator Code';
+                        document.getElementById('recovery_code').focus();
+                    } else {
+                        method.value = 'totp';
+                        totpSec.style.display = 'block';
+                        recSec.style.display = 'none';
+                        btn.innerHTML = '<i class="fas fa-key"></i> Use an emergency recovery code';
+                        document.getElementById('otp_code').focus();
+                    }
+                }
+            </script>
+        <?php else: ?>
+            <!-- Standard Login Form -->
+            <p class="form-heading">Welcome back 👋</p>
+
+            <form method="POST" action="" id="loginForm" novalidate>
+                <div class="form-group">
+                    <label class="form-label" for="email">Email or Username</label>
+                    <div class="input-wrapper">
+                        <i class="fas fa-envelope input-icon"></i>
+                        <input
+                            type="text"
+                            id="email"
+                            name="email"
+                            class="form-input"
+                            placeholder="you@toursphere.com"
+                            value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>"
+                            autocomplete="username"
+                            required
+                        >
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="password">Password</label>
+                    <div class="input-wrapper">
+                        <i class="fas fa-lock input-icon"></i>
+                        <input
+                            type="password"
+                            id="password"
+                            name="password"
+                            class="form-input"
+                            placeholder="Enter your password"
+                            autocomplete="current-password"
+                            required
+                        >
+                        <button type="button" class="pw-toggle" id="pwToggle" aria-label="Toggle password visibility">
+                            <i class="fas fa-eye" id="pwToggleIcon"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn-login" id="loginBtn">
+                    <span class="spinner"></span>
+                    <span class="btn-text">
+                        <i class="fas fa-sign-in-alt"></i>&nbsp; Sign In
+                    </span>
+                </button>
+            </form>
+        <?php endif; ?>
 
         <!-- Footer hint -->
         <div class="login-footer">

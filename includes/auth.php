@@ -158,6 +158,11 @@ function checkSessionTimeout() {
  * @param string $role  Role string from session
  */
 function roleCanAccessPage(string $page, string $role): bool {
+    // Universal self-service account security pages accessible by all authenticated roles
+    if ($page === 'security.php' || $page === 'profile.php') {
+        return true;
+    }
+
     $role = strtolower(trim($role));
     $map  = ROLE_PAGE_MAP;
 

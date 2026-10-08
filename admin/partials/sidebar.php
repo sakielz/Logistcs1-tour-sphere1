@@ -334,11 +334,13 @@ $currentPage = basename($_SERVER['PHP_SELF']);
                     <?php endif;
                 } catch (Exception $e) {}
                 ?>
-            </a>
             <a href="settings.php" class="nav-item <?php echo $currentPage === 'settings.php' ? 'active' : ''; ?>">
                 <i class="fas fa-cog"></i> Settings
             </a>
             <?php endif; ?>
+            <a href="security.php" class="nav-item <?php echo $currentPage === 'security.php' ? 'active' : ''; ?>">
+                <i class="fas fa-shield-alt"></i> Account Security & 2FA
+            </a>
             <a href="../logout.php" class="nav-item" onclick="return confirm('Are you sure you want to logout?');">
                 <i class="fas fa-sign-out-alt"></i> Logout
             </a>
