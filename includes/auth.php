@@ -28,6 +28,7 @@ if (!defined('SESSION_TIMEOUT')) {
 // 'admin' is always granted everything (handled separately).
 if (!defined('ROLE_PAGE_MAP')) {
     define('ROLE_PAGE_MAP', [
+        'super_admin' => '*', // wildcard – all pages
         'admin' => '*', // wildcard – all pages
 
         'warehouse_manager' => [
@@ -45,6 +46,7 @@ if (!defined('ROLE_PAGE_MAP')) {
             'purchase-orders.php',
             'requisitions.php',
             'contracts.php',
+            'bidding.php',
             'shipments.php',
             'documents.php',
             'reports.php',
@@ -68,6 +70,7 @@ if (!defined('ROLE_PAGE_MAP')) {
 // Defined here so it is the single source of truth.
 if (!defined('ROLE_MODULE_PERMS')) {
     define('ROLE_MODULE_PERMS', [
+        'super_admin' => '*',
         'admin' => '*',
 
         'warehouse_manager' => [
@@ -82,6 +85,7 @@ if (!defined('ROLE_MODULE_PERMS')) {
             'purchase_order' => ['view', 'create', 'edit', 'approve'],
             'requisition'    => ['view', 'create', 'edit', 'approve'],
             'contract'       => ['view', 'create', 'edit'],
+            'bidding'        => ['view', 'create', 'edit', 'award'],
             'shipment'       => ['view', 'create', 'edit'],
             'document'       => ['view', 'create', 'edit'],
             'report'         => ['view'],
@@ -196,7 +200,7 @@ function requireAuth($allowedRoles = null) {
     $userRole = strtolower(trim($_SESSION['role'] ?? 'employer'));
 
     // Admins bypass everything
-    if ($userRole === 'admin') {
+    if ($userRole === 'admin' || $userRole === 'super_admin') {
         return;
     }
 
@@ -313,7 +317,7 @@ if (!function_exists('hasPermission')) {
     function hasPermission($module, $action = 'view') {
         $role = strtolower(trim($_SESSION['role'] ?? 'employer'));
 
-        if ($role === 'admin') return true;
+        if ($role === 'admin' || $role === 'super_admin') return true;
 
         $map = ROLE_MODULE_PERMS;
         if (!isset($map[$role])) return false;

@@ -558,13 +558,6 @@ if (isset($_GET['timeout']) && $_GET['timeout'] === '1') {
                 </div>
             </div>
 
-            <div class="form-options">
-                <label class="remember-label">
-                    <input type="checkbox" name="remember" id="rememberMe">
-                    Remember me
-                </label>
-                <a href="forgot-password.php" class="forgot-link">Forgot password?</a>
-            </div>
 
             <button type="submit" class="btn-login" id="loginBtn">
                 <span class="spinner"></span>

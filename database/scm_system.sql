@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS `users` (
     `username` VARCHAR(100) UNIQUE NOT NULL,
     `email` VARCHAR(255) UNIQUE NOT NULL,
     `password` VARCHAR(255) NOT NULL,
-    `role` ENUM('admin', 'warehouse_manager', 'procurement_officer', 'inventory_clerk', 'employer') DEFAULT 'employer',
+    `role` ENUM('super_admin', 'admin', 'warehouse_manager', 'procurement_officer', 'inventory_clerk') DEFAULT 'inventory_clerk',
     `full_name` VARCHAR(255) NOT NULL,
     `is_active` BOOLEAN DEFAULT TRUE,
     `is_archived` BOOLEAN DEFAULT FALSE,
@@ -481,6 +481,59 @@ CREATE TABLE IF NOT EXISTS `warehouse_zones` (
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (`warehouse_id`) REFERENCES `warehouses`(`id`) ON DELETE CASCADE,
     UNIQUE KEY `unique_warehouse_zone` (`warehouse_id`, `zone_code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `bidding_tenders` (
+    `id` INT PRIMARY KEY AUTO_INCREMENT,
+    `tender_code` VARCHAR(50) UNIQUE NOT NULL,
+    `title` VARCHAR(255) NOT NULL,
+    `tender_type` ENUM('spot_auction', 'contract_tender') NOT NULL DEFAULT 'spot_auction',
+    `transport_mode` ENUM('road', 'sea', 'air', 'rail', 'multimodal') NOT NULL DEFAULT 'road',
+    `origin` VARCHAR(255) NOT NULL,
+    `destination` VARCHAR(255) NOT NULL,
+    `cargo_type` VARCHAR(100) DEFAULT 'standard_dry',
+    `estimated_volume` VARCHAR(100),
+    `target_rate` DECIMAL(12,2) DEFAULT 0.00,
+    `currency` VARCHAR(10) DEFAULT 'PHP',
+    `deadline` DATETIME,
+    `service_level_req` VARCHAR(255),
+    `status` ENUM('draft', 'open', 'under_evaluation', 'awarded', 'closed', 'cancelled') DEFAULT 'open',
+    `awarded_bid_id` INT NULL,
+    `awarded_carrier_id` INT NULL,
+    `awarded_carrier_name` VARCHAR(255) NULL,
+    `awarded_rate` DECIMAL(12,2) NULL,
+    `tms_shipment_id` INT NULL,
+    `contract_id` INT NULL,
+    `rate_sheet_specs` TEXT,
+    `notes` TEXT,
+    `is_archived` BOOLEAN DEFAULT FALSE,
+    `created_by` INT,
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (`awarded_carrier_id`) REFERENCES `suppliers`(`id`) ON DELETE SET NULL,
+    INDEX `idx_tender_status` (`status`),
+    INDEX `idx_tender_deadline` (`deadline`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `bidding_bids` (
+    `id` INT PRIMARY KEY AUTO_INCREMENT,
+    `tender_id` INT NOT NULL,
+    `carrier_id` INT NULL,
+    `carrier_name` VARCHAR(255) NOT NULL,
+    `bid_amount` DECIMAL(12,2) NOT NULL,
+    `currency` VARCHAR(10) DEFAULT 'PHP',
+    `transit_time_days` INT DEFAULT 1,
+    `carrier_score` DECIMAL(5,2) DEFAULT 85.00,
+    `cost_score` DECIMAL(5,2) DEFAULT 0.00,
+    `composite_score` DECIMAL(5,2) DEFAULT 0.00,
+    `service_level` VARCHAR(255),
+    `notes` TEXT,
+    `status` ENUM('submitted', 'shortlisted', 'awarded', 'rejected') DEFAULT 'submitted',
+    `submitted_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (`tender_id`) REFERENCES `bidding_tenders`(`id`) ON DELETE CASCADE,
+    FOREIGN KEY (`carrier_id`) REFERENCES `suppliers`(`id`) ON DELETE SET NULL,
+    INDEX `idx_bid_tender` (`tender_id`),
+    INDEX `idx_bid_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================

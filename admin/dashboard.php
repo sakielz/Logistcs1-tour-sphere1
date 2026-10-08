@@ -481,7 +481,10 @@ $theme = $stmt->fetch()['setting_value'] ?? 'light';
                     <h1>Admin Dashboard</h1>
                     <p>Welcome back, <?php echo htmlspecialchars($_SESSION['full_name'] ?? 'Unknown User'); ?>!</p>
                 </div>
-                <div class="top-bar-actions">
+                <div class="top-bar-actions" style="display:flex; align-items:center; gap:12px;">
+                    <a href="reports.php?narrative=1" class="btn btn-primary" style="display:inline-flex; align-items:center; gap:8px; background:linear-gradient(135deg, #2563EB, #7C3AED); color:#fff; padding:9px 16px; border-radius:8px; font-weight:600; font-size:13px; text-decoration:none; box-shadow:0 4px 12px rgba(37,99,235,0.25);">
+                        <i class="fas fa-robot"></i> AI Daily Narrative Briefing
+                    </a>
                     <?php include 'partials/headbar_actions.php'; ?>
                 </div>
             </div>

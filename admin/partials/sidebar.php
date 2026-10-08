@@ -231,6 +231,19 @@ $currentPage = basename($_SERVER['PHP_SELF']);
                 } catch (Exception $e) {}
                 ?>
             </a>
+            
+            <a href="bidding.php" class="nav-item <?php echo $currentPage === 'bidding.php' ? 'active' : ''; ?>">
+                <i class="fas fa-gavel"></i> Freight Bidding
+                <?php
+                try {
+                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM bidding_tenders WHERE status IN ('open', 'under_evaluation') AND is_archived = 0");
+                    $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
+                    if ($count > 0): ?>
+                    <span class="badge" style="background: #2563EB;"><?php echo $count; ?></span>
+                    <?php endif;
+                } catch (Exception $e) {}
+                ?>
+            </a>
         </div>
     </div>
     <?php endif; ?>

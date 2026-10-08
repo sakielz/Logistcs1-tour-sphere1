@@ -229,7 +229,7 @@ function hasRole($role) {
  * Check if user is admin
  */
 function isAdmin() {
-    return hasRole('admin');
+    return hasRole('admin') || hasRole('super_admin');
 }
 
 /**
