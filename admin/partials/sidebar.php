@@ -36,11 +36,6 @@ try {
 // Get current page for active state
 $currentPage = basename($_SERVER['PHP_SELF']);
 ?>
-<?php if (defined('AUTH_BYPASS') && AUTH_BYPASS): ?>
-<div id="auth-bypass-banner" style="position:fixed;bottom:16px;right:16px;z-index:99999;background:#B45309;color:#fff;padding:10px 16px;border-radius:10px;font:600 13px/1.4 'Poppins',sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.25);">
-    <i class="fas fa-triangle-exclamation"></i> Login is DISABLED (AUTH_BYPASS=true) &mdash; set it to false in .env when done.
-</div>
-<?php endif; ?>
 <!-- Session Inactivity Timeout (30 minutes) -->
 <script src="../assets/js/session-timeout.js" defer></script>
 

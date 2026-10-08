@@ -57,22 +57,22 @@ if (is_file($envFile)) {
     }
 }
 
-$driver = getenv('DB_CONNECTION') ?: ($env['DB_CONNECTION'] ?? 'sqlite');
-$host = getenv('DB_HOST') ?: ($env['DB_HOST'] ?? '127.0.0.1');
-$port = getenv('DB_PORT') ?: ($env['DB_PORT'] ?? '3306');
-$dbName = getenv('DB_DATABASE') ?: ($env['DB_DATABASE'] ?? $rootDir . '/database/database.sqlite');
-$username = getenv('DB_USERNAME') ?: ($env['DB_USERNAME'] ?? 'root');
-$password = getenv('DB_PASSWORD') ?: ($env['DB_PASSWORD'] ?? '');
+$driver = getenv('DB_CONNECTION') ?: ($env['DB_CONNECTION'] ?? 'pgsql');
+$host = getenv('DB_HOST') ?: ($env['DB_HOST'] ?? 'aws-0-ap-northeast-1.pooler.supabase.com');
+$port = getenv('DB_PORT') ?: ($env['DB_PORT'] ?? '6543');
+$dbName = getenv('DB_DATABASE') ?: ($env['DB_DATABASE'] ?? 'postgres');
+$username = getenv('DB_USERNAME') ?: ($env['DB_USERNAME'] ?? 'postgres.zuwwnhwhdhtunigajswd');
+$password = getenv('DB_PASSWORD') ?: ($env['DB_PASSWORD'] ?? 'WrT2AyxJF3ZHDw8F');
 
 // Support Supabase / cloud database connection URLs (DB_URL / DATABASE_URL)
-$dbUrl = 'postgresql://postgres.zuwwnhwhdhtunigajswd:WrT2AyxJF3ZHDw8F@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres';
+$dbUrl = getenv('DATABASE_URL') ?: ($env['DATABASE_URL'] ?? (getenv('DB_URL') ?: ($env['DB_URL'] ?? 'postgresql://postgres.zuwwnhwhdhtunigajswd:WrT2AyxJF3ZHDw8F@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres')));
 if (!empty($dbUrl)) {
     $parsedUrl = parse_url($dbUrl);
     if ($parsedUrl) {
         $urlScheme = strtolower($parsedUrl['scheme'] ?? '');
         if (in_array($urlScheme, ['postgres', 'postgresql', 'pgsql'])) {
             $driver = 'pgsql';
-            if (empty($port) || $port === '3306') $port = '5432';
+            if (empty($port) || $port === '3306') $port = '6543';
         } elseif ($urlScheme === 'mysql') {
             $driver = 'mysql';
         }
@@ -525,17 +525,141 @@ if (!function_exists('initializePostgresDatabase')) {
     function initializePostgresDatabase(PDO $pdo) {
         try {
             $check = $pdo->query("SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users' LIMIT 1");
-            if ($check && $check->fetchColumn()) {
-                return; // Tables already initialized
-            }
-
-            $schemaFile = dirname(__DIR__) . '/database/supabase_schema.sql';
-            if (is_file($schemaFile)) {
-                $sql = file_get_contents($schemaFile);
-                if (!empty($sql)) {
-                    $pdo->exec($sql);
+            if (!$check || !$check->fetchColumn()) {
+                $schemaFile = dirname(__DIR__) . '/database/supabase_schema.sql';
+                if (is_file($schemaFile)) {
+                    $sql = file_get_contents($schemaFile);
+                    if (!empty($sql)) {
+                        $pdo->exec($sql);
+                    }
                 }
             }
+
+            // Ensure bidding tables exist in PostgreSQL/Supabase
+            $checkBidding = $pdo->query("SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'bidding_tenders' LIMIT 1");
+            if (!$checkBidding || !$checkBidding->fetchColumn()) {
+                $pdo->exec("
+                    CREATE TABLE IF NOT EXISTS bidding_tenders (
+                        id BIGSERIAL PRIMARY KEY,
+                        tender_code VARCHAR(100) UNIQUE NOT NULL,
+                        title VARCHAR(255) NOT NULL,
+                        tender_type VARCHAR(50) NOT NULL DEFAULT 'spot_auction',
+                        transport_mode VARCHAR(50) NOT NULL DEFAULT 'road',
+                        origin VARCHAR(255) NOT NULL,
+                        destination VARCHAR(255) NOT NULL,
+                        cargo_type VARCHAR(100) DEFAULT 'standard_dry',
+                        estimated_volume VARCHAR(100),
+                        target_rate NUMERIC(15, 2) DEFAULT 0.00,
+                        currency VARCHAR(10) DEFAULT 'PHP',
+                        deadline TIMESTAMPTZ,
+                        service_level_req TEXT,
+                        status VARCHAR(50) DEFAULT 'open',
+                        awarded_bid_id BIGINT,
+                        awarded_carrier_id BIGINT,
+                        awarded_carrier_name VARCHAR(255),
+                        awarded_rate NUMERIC(15, 2),
+                        tms_shipment_id BIGINT,
+                        contract_id BIGINT,
+                        rate_sheet_specs TEXT,
+                        notes TEXT,
+                        is_archived BOOLEAN DEFAULT FALSE,
+                        created_by BIGINT,
+                        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    CREATE TABLE IF NOT EXISTS bidding_bids (
+                        id BIGSERIAL PRIMARY KEY,
+                        tender_id BIGINT NOT NULL REFERENCES bidding_tenders(id) ON DELETE CASCADE,
+                        carrier_id BIGINT,
+                        carrier_name VARCHAR(255) NOT NULL,
+                        bid_amount NUMERIC(15, 2) NOT NULL,
+                        currency VARCHAR(10) DEFAULT 'PHP',
+                        transit_time_days INTEGER DEFAULT 1,
+                        carrier_score NUMERIC(5, 2) DEFAULT 85.0,
+                        cost_score NUMERIC(5, 2) DEFAULT 0.0,
+                        composite_score NUMERIC(5, 2) DEFAULT 0.0,
+                        service_level TEXT,
+                        notes TEXT,
+                        status VARCHAR(50) DEFAULT 'submitted',
+                        submitted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                    );
+                ");
+            }
+
+            // Ensure compatibility functions and operators for boolean/integer comparisons
+            $pdo->exec("
+                CREATE OR REPLACE FUNCTION public.bool_eq_int(b boolean, i integer) RETURNS boolean AS $$
+                    SELECT b = (i <> 0);
+                $$ LANGUAGE SQL IMMUTABLE;
+
+                CREATE OR REPLACE FUNCTION public.int_eq_bool(i integer, b boolean) RETURNS boolean AS $$
+                    SELECT (i <> 0) = b;
+                $$ LANGUAGE SQL IMMUTABLE;
+
+                CREATE OR REPLACE FUNCTION public.bool_neq_int(b boolean, i integer) RETURNS boolean AS $$
+                    SELECT b <> (i <> 0);
+                $$ LANGUAGE SQL IMMUTABLE;
+
+                CREATE OR REPLACE FUNCTION public.int_neq_bool(i integer, b boolean) RETURNS boolean AS $$
+                    SELECT (i <> 0) <> b;
+                $$ LANGUAGE SQL IMMUTABLE;
+
+                DO \$\$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_operator o
+                        JOIN pg_namespace n ON o.oprnamespace = n.oid
+                        WHERE oprname = '=' AND oprleft = 'boolean'::regtype AND oprright = 'integer'::regtype
+                    ) THEN
+                        CREATE OPERATOR public.= (
+                            LEFTARG = boolean,
+                            RIGHTARG = integer,
+                            PROCEDURE = public.bool_eq_int,
+                            COMMUTATOR = =
+                        );
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_operator o
+                        JOIN pg_namespace n ON o.oprnamespace = n.oid
+                        WHERE oprname = '=' AND oprleft = 'integer'::regtype AND oprright = 'boolean'::regtype
+                    ) THEN
+                        CREATE OPERATOR public.= (
+                            LEFTARG = integer,
+                            RIGHTARG = boolean,
+                            PROCEDURE = public.int_eq_bool,
+                            COMMUTATOR = =
+                        );
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_operator o
+                        JOIN pg_namespace n ON o.oprnamespace = n.oid
+                        WHERE oprname = '<>' AND oprleft = 'boolean'::regtype AND oprright = 'integer'::regtype
+                    ) THEN
+                        CREATE OPERATOR public.<> (
+                            LEFTARG = boolean,
+                            RIGHTARG = integer,
+                            PROCEDURE = public.bool_neq_int,
+                            COMMUTATOR = <>
+                        );
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_operator o
+                        JOIN pg_namespace n ON o.oprnamespace = n.oid
+                        WHERE oprname = '<>' AND oprleft = 'integer'::regtype AND oprright = 'boolean'::regtype
+                    ) THEN
+                        CREATE OPERATOR public.<> (
+                            LEFTARG = integer,
+                            RIGHTARG = boolean,
+                            PROCEDURE = public.int_neq_bool,
+                            COMMUTATOR = <>
+                        );
+                    END IF;
+                END \$\$;
+            ");
         } catch (Throwable $e) {
             error_log("[POSTGRES INIT NOTICE] Automatic schema bootstrap: " . $e->getMessage());
         }
@@ -573,9 +697,9 @@ try {
 
         initializeSqliteDatabase($pdo);
     } elseif (in_array(strtolower($driver), ['pgsql', 'postgres', 'postgresql'])) {
-        $dsnPort = !empty($port) ? $port : '5432';
+        $dsnPort = !empty($port) ? $port : '6543';
         $dsn = "pgsql:host={$host};port={$dsnPort};dbname={$dbName}";
-        if (strpos($host, 'supabase.co') !== false || getenv('DB_SSLMODE') === 'require') {
+        if (strpos($host, 'supabase') !== false || getenv('DB_SSLMODE') === 'require' || empty(getenv('DB_SSLMODE'))) {
             $dsn .= ";sslmode=require";
         }
         $pdo = new PDO($dsn, $username, $password, [
@@ -595,19 +719,24 @@ try {
         ]);
     }
 } catch (Throwable $e) {
-    error_log("[DATABASE CONNECTION NOTICE] Primary connection failed ({$driver}): " . $e->getMessage() . ". Falling back to local SQLite.");
-    $fallbackSqlite = $rootDir . '/database/database.sqlite';
-    if (is_file($fallbackSqlite)) {
-        try {
-            $pdo = new PDO('sqlite:' . $fallbackSqlite, null, null, [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                PDO::ATTR_EMULATE_PREPARES => false,
-            ]);
-            initializeSqliteDatabase($pdo);
-        } catch (Throwable $ignored) {
-            $pdo = null;
+    error_log("[DATABASE CONNECTION ERROR] Connection to {$driver} failed: " . $e->getMessage());
+    if (strtolower($driver) === 'sqlite') {
+        $fallbackSqlite = $rootDir . '/database/database.sqlite';
+        if (is_file($fallbackSqlite)) {
+            try {
+                $pdo = new PDO('sqlite:' . $fallbackSqlite, null, null, [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                    PDO::ATTR_EMULATE_PREPARES => false,
+                ]);
+                initializeSqliteDatabase($pdo);
+            } catch (Throwable $ignored) {
+                $pdo = null;
+            }
         }
+    } else {
+        // Do not silently hijack to SQLite when Supabase is configured
+        throw new RuntimeException("Database connection error ({$driver}): " . $e->getMessage());
     }
 }
 
@@ -965,42 +1094,6 @@ if ($pdo instanceof PDO) {
 require_once $rootDir . '/includes/function.php';
 
 $GLOBALS['pdo'] = $pdo;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TEMPORARY LOGIN BYPASS
-// Set AUTH_BYPASS=true in .env to skip the login screen. Every request is
-// automatically signed in as the first active, non-archived admin account in
-// the database (a real row, so created_by / audit_logs foreign keys stay valid).
-// !! Set AUTH_BYPASS=false (or remove it) to re-enable the security login. !!
-// ─────────────────────────────────────────────────────────────────────────────
-if (!defined('AUTH_BYPASS')) {
-    define('AUTH_BYPASS', in_array(strtolower((string) env('AUTH_BYPASS', 'false')), ['1', 'true', 'yes', 'on'], true));
-}
-
-if (AUTH_BYPASS && $pdo instanceof PDO && empty($_SESSION['user_id'])) {
-    try {
-        $bypassUser = $pdo->query(
-            "SELECT id, username, email, role, full_name FROM users
-             WHERE role = 'admin' AND is_active = true AND is_archived = false
-             ORDER BY id LIMIT 1"
-        )->fetch(PDO::FETCH_ASSOC);
-
-        if ($bypassUser) {
-            unset($_SESSION['2fa_pending_user']);
-            $_SESSION['user_id']       = $bypassUser['id'];
-            $_SESSION['username']      = $bypassUser['username'];
-            $_SESSION['role']          = $bypassUser['role'];
-            $_SESSION['full_name']     = $bypassUser['full_name'];
-            $_SESSION['email']         = $bypassUser['email'];
-            $_SESSION['last_activity'] = time();
-            $_SESSION['auth_bypass']   = true;
-        } else {
-            error_log('[AUTH_BYPASS] No active admin user found in the users table; bypass could not sign in.');
-        }
-    } catch (Throwable $e) {
-        error_log('[AUTH_BYPASS] Failed to load bypass admin: ' . $e->getMessage());
-    }
-}
 
 $config = [
     'default' => $driver,

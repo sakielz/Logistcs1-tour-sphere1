@@ -23,54 +23,150 @@ $currentUserId = $_SESSION['user_id'] ?? 1;
 
 // ── Ensure Bidding Tables Exist (Auto-migration safeguard) ───────────────────
 try {
-    $pdo->exec("CREATE TABLE IF NOT EXISTS bidding_tenders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        tender_code TEXT UNIQUE NOT NULL,
-        title TEXT NOT NULL,
-        tender_type TEXT NOT NULL DEFAULT 'spot_auction',
-        transport_mode TEXT NOT NULL DEFAULT 'road',
-        origin TEXT NOT NULL,
-        destination TEXT NOT NULL,
-        cargo_type TEXT DEFAULT 'standard_dry',
-        estimated_volume TEXT,
-        target_rate REAL DEFAULT 0.00,
-        currency TEXT DEFAULT 'PHP',
-        deadline TEXT,
-        service_level_req TEXT,
-        status TEXT DEFAULT 'open',
-        awarded_bid_id INTEGER,
-        awarded_carrier_id INTEGER,
-        awarded_carrier_name TEXT,
-        awarded_rate REAL,
-        tms_shipment_id INTEGER,
-        contract_id INTEGER,
-        rate_sheet_specs TEXT,
-        notes TEXT,
-        is_archived INTEGER DEFAULT 0,
-        created_by INTEGER,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );");
+    $driverName = strtolower((string)$pdo->getAttribute(PDO::ATTR_DRIVER_NAME));
+    if (in_array($driverName, ['pgsql', 'postgres', 'postgresql'], true)) {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS bidding_tenders (
+            id BIGSERIAL PRIMARY KEY,
+            tender_code VARCHAR(100) UNIQUE NOT NULL,
+            title VARCHAR(255) NOT NULL,
+            tender_type VARCHAR(50) NOT NULL DEFAULT 'spot_auction',
+            transport_mode VARCHAR(50) NOT NULL DEFAULT 'road',
+            origin VARCHAR(255) NOT NULL,
+            destination VARCHAR(255) NOT NULL,
+            cargo_type VARCHAR(100) DEFAULT 'standard_dry',
+            estimated_volume VARCHAR(100),
+            target_rate NUMERIC(15, 2) DEFAULT 0.00,
+            currency VARCHAR(10) DEFAULT 'PHP',
+            deadline TIMESTAMPTZ,
+            service_level_req TEXT,
+            status VARCHAR(50) DEFAULT 'open',
+            awarded_bid_id BIGINT,
+            awarded_carrier_id BIGINT,
+            awarded_carrier_name VARCHAR(255),
+            awarded_rate NUMERIC(15, 2),
+            tms_shipment_id BIGINT,
+            contract_id BIGINT,
+            rate_sheet_specs TEXT,
+            notes TEXT,
+            is_archived BOOLEAN DEFAULT FALSE,
+            created_by BIGINT,
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );");
 
-    $pdo->exec("CREATE TABLE IF NOT EXISTS bidding_bids (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        tender_id INTEGER NOT NULL,
-        carrier_id INTEGER,
-        carrier_name TEXT NOT NULL,
-        bid_amount REAL NOT NULL,
-        currency TEXT DEFAULT 'PHP',
-        transit_time_days INTEGER DEFAULT 1,
-        carrier_score REAL DEFAULT 85.0,
-        cost_score REAL DEFAULT 0.0,
-        composite_score REAL DEFAULT 0.0,
-        service_level TEXT,
-        notes TEXT,
-        status TEXT DEFAULT 'submitted',
-        submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (tender_id) REFERENCES bidding_tenders(id) ON DELETE CASCADE
-    );");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS bidding_bids (
+            id BIGSERIAL PRIMARY KEY,
+            tender_id BIGINT NOT NULL REFERENCES bidding_tenders(id) ON DELETE CASCADE,
+            carrier_id BIGINT,
+            carrier_name VARCHAR(255) NOT NULL,
+            bid_amount NUMERIC(15, 2) NOT NULL,
+            currency VARCHAR(10) DEFAULT 'PHP',
+            transit_time_days INTEGER DEFAULT 1,
+            carrier_score NUMERIC(5, 2) DEFAULT 85.0,
+            cost_score NUMERIC(5, 2) DEFAULT 0.0,
+            composite_score NUMERIC(5, 2) DEFAULT 0.0,
+            service_level TEXT,
+            notes TEXT,
+            status VARCHAR(50) DEFAULT 'submitted',
+            submitted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );");
+    } elseif (in_array($driverName, ['mysql', 'mariadb'], true)) {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS bidding_tenders (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            tender_code VARCHAR(100) UNIQUE NOT NULL,
+            title VARCHAR(255) NOT NULL,
+            tender_type VARCHAR(50) NOT NULL DEFAULT 'spot_auction',
+            transport_mode VARCHAR(50) NOT NULL DEFAULT 'road',
+            origin VARCHAR(255) NOT NULL,
+            destination VARCHAR(255) NOT NULL,
+            cargo_type VARCHAR(100) DEFAULT 'standard_dry',
+            estimated_volume VARCHAR(100),
+            target_rate DECIMAL(15, 2) DEFAULT 0.00,
+            currency VARCHAR(10) DEFAULT 'PHP',
+            deadline DATETIME,
+            service_level_req TEXT,
+            status VARCHAR(50) DEFAULT 'open',
+            awarded_bid_id INT,
+            awarded_carrier_id INT,
+            awarded_carrier_name VARCHAR(255),
+            awarded_rate DECIMAL(15, 2),
+            tms_shipment_id INT,
+            contract_id INT,
+            rate_sheet_specs TEXT,
+            notes TEXT,
+            is_archived TINYINT(1) DEFAULT 0,
+            created_by INT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS bidding_bids (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            tender_id INT NOT NULL,
+            carrier_id INT,
+            carrier_name VARCHAR(255) NOT NULL,
+            bid_amount DECIMAL(15, 2) NOT NULL,
+            currency VARCHAR(10) DEFAULT 'PHP',
+            transit_time_days INT DEFAULT 1,
+            carrier_score DECIMAL(5, 2) DEFAULT 85.0,
+            cost_score DECIMAL(5, 2) DEFAULT 0.0,
+            composite_score DECIMAL(5, 2) DEFAULT 0.0,
+            service_level TEXT,
+            notes TEXT,
+            status VARCHAR(50) DEFAULT 'submitted',
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (tender_id) REFERENCES bidding_tenders(id) ON DELETE CASCADE
+        );");
+    } else {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS bidding_tenders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tender_code TEXT UNIQUE NOT NULL,
+            title TEXT NOT NULL,
+            tender_type TEXT NOT NULL DEFAULT 'spot_auction',
+            transport_mode TEXT NOT NULL DEFAULT 'road',
+            origin TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            cargo_type TEXT DEFAULT 'standard_dry',
+            estimated_volume TEXT,
+            target_rate REAL DEFAULT 0.00,
+            currency TEXT DEFAULT 'PHP',
+            deadline TEXT,
+            service_level_req TEXT,
+            status TEXT DEFAULT 'open',
+            awarded_bid_id INTEGER,
+            awarded_carrier_id INTEGER,
+            awarded_carrier_name TEXT,
+            awarded_rate REAL,
+            tms_shipment_id INTEGER,
+            contract_id INTEGER,
+            rate_sheet_specs TEXT,
+            notes TEXT,
+            is_archived INTEGER DEFAULT 0,
+            created_by INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS bidding_bids (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tender_id INTEGER NOT NULL,
+            carrier_id INTEGER,
+            carrier_name TEXT NOT NULL,
+            bid_amount REAL NOT NULL,
+            currency TEXT DEFAULT 'PHP',
+            transit_time_days INTEGER DEFAULT 1,
+            carrier_score REAL DEFAULT 85.0,
+            cost_score REAL DEFAULT 0.0,
+            composite_score REAL DEFAULT 0.0,
+            service_level TEXT,
+            notes TEXT,
+            status TEXT DEFAULT 'submitted',
+            submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (tender_id) REFERENCES bidding_tenders(id) ON DELETE CASCADE
+        );");
+    }
 } catch (Throwable $t) {
-    // Table exists or already initialized
+    error_log("[BIDDING INIT NOTICE] " . $t->getMessage());
 }
 
 // ── Seed demo carrier records if none exist ─────────────────────────────────

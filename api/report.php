@@ -44,7 +44,7 @@ function generateDailyNarrativeReport($pdo, $targetDate, $userId) {
         FROM inventory_transactions it
         JOIN products p ON it.product_id = p.id
         WHERE DATE(it.created_at) = ?
-        GROUP BY it.transaction_type, it.product_id
+        GROUP BY it.transaction_type, it.product_id, p.product_name, p.sku
         ORDER BY total_qty DESC
     ");
     $stmtMovements->execute([$targetDate]);

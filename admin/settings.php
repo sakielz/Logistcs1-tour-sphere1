@@ -37,25 +37,60 @@ if ($action === 'backup_db') {
     requireAuth('admin');
     try {
         $rootDir = dirname(__DIR__);
-        $sqlitePath = $rootDir . '/database/database.sqlite';
         $timestamp = date('Y-m-d_His');
-        $backupFilename = 'logistics_backup_' . $timestamp . '.sqlite';
         $backupDir = $rootDir . '/database/backups';
 
         if (!is_dir($backupDir)) {
             mkdir($backupDir, 0777, true);
         }
 
-        if (is_file($sqlitePath)) {
+        $activeDriver = strtolower((string)$pdo->getAttribute(PDO::ATTR_DRIVER_NAME));
+
+        if (in_array($activeDriver, ['pgsql', 'postgres', 'postgresql'], true)) {
+            $backupFilename = 'logistics_backup_' . $timestamp . '.sql';
             $destination = $backupDir . '/' . $backupFilename;
-            copy($sqlitePath, $destination);
+
+            $tables = [
+                'users', 'system_settings', 'audit_logs', 'suppliers', 'supplier_privacy_acknowledgements',
+                'inventory_groups', 'products', 'purchase_orders', 'purchase_order_items', 'inventory_batches',
+                'warehouses', 'warehouse_inventory', 'warehouse_zones', 'product_serial_numbers',
+                'inventory_transactions', 'inventory_incidents', 'purchase_requisitions', 'requisition_items',
+                'procurement_contracts', 'shipments', 'documents', 'supplier_performance',
+                'bidding_tenders', 'bidding_bids', 'user_recovery_codes', 'two_factor_rate_limits'
+            ];
+
+            $sqlContent = "-- Toursphere Logistics Supabase Database Backup\n";
+            $sqlContent .= "-- Generated at " . date('Y-m-d H:i:s') . "\n\n";
+
+            foreach ($tables as $tbl) {
+                try {
+                    $rows = $pdo->query("SELECT * FROM \"{$tbl}\"")->fetchAll(PDO::FETCH_ASSOC);
+                    if (!empty($rows)) {
+                        $sqlContent .= "-- Table: {$tbl} (" . count($rows) . " rows)\n";
+                        foreach ($rows as $row) {
+                            $cols = array_keys($row);
+                            $escapedCols = array_map(function($c) { return "\"{$c}\""; }, $cols);
+                            $escapedVals = array_map(function($v) use ($pdo) {
+                                if ($v === null) return "NULL";
+                                if (is_bool($v)) return $v ? "TRUE" : "FALSE";
+                                if (is_numeric($v)) return (string)$v;
+                                return $pdo->quote((string)$v);
+                            }, array_values($row));
+                            $sqlContent .= "INSERT INTO \"{$tbl}\" (" . implode(', ', $escapedCols) . ") VALUES (" . implode(', ', $escapedVals) . ") ON CONFLICT DO NOTHING;\n";
+                        }
+                        $sqlContent .= "\n";
+                    }
+                } catch (Throwable $e) {}
+            }
+
+            file_put_contents($destination, $sqlContent);
 
             if (function_exists('logAudit')) {
-                logAudit($_SESSION['user_id'], 'backup_database', 'system', "Created database backup: $backupFilename");
+                logAudit($_SESSION['user_id'], 'backup_database', 'system', "Created Supabase SQL database backup: $backupFilename");
             }
 
             header('Content-Description: File Transfer');
-            header('Content-Type: application/x-sqlite3');
+            header('Content-Type: application/sql');
             header('Content-Disposition: attachment; filename="' . $backupFilename . '"');
             header('Expires: 0');
             header('Cache-Control: must-revalidate');
@@ -64,9 +99,30 @@ if ($action === 'backup_db') {
             readfile($destination);
             exit();
         } else {
-            $_SESSION['error'] = 'Database file not found at: ' . $sqlitePath;
-            header('Location: settings.php');
-            exit();
+            $sqlitePath = $rootDir . '/database/database.sqlite';
+            $backupFilename = 'logistics_backup_' . $timestamp . '.sqlite';
+            if (is_file($sqlitePath)) {
+                $destination = $backupDir . '/' . $backupFilename;
+                copy($sqlitePath, $destination);
+
+                if (function_exists('logAudit')) {
+                    logAudit($_SESSION['user_id'], 'backup_database', 'system', "Created database backup: $backupFilename");
+                }
+
+                header('Content-Description: File Transfer');
+                header('Content-Type: application/x-sqlite3');
+                header('Content-Disposition: attachment; filename="' . $backupFilename . '"');
+                header('Expires: 0');
+                header('Cache-Control: must-revalidate');
+                header('Pragma: public');
+                header('Content-Length: ' . filesize($destination));
+                readfile($destination);
+                exit();
+            } else {
+                $_SESSION['error'] = 'Database file not found at: ' . $sqlitePath;
+                header('Location: settings.php');
+                exit();
+            }
         }
     } catch (Exception $e) {
         $_SESSION['error'] = 'Database backup failed: ' . $e->getMessage();
@@ -105,7 +161,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $driverName = strtolower($pdo->getAttribute(PDO::ATTR_DRIVER_NAME));
 
             foreach ($settings as $key => $value) {
-                if ($driverName === 'sqlite') {
+                if (in_array($driverName, ['sqlite', 'pgsql', 'postgres', 'postgresql'], true)) {
                     $stmt = $pdo->prepare("INSERT INTO system_settings (setting_key, setting_value, setting_group) VALUES (?, ?, 'general') ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value");
                     $stmt->execute([$key, (string)$value]);
                 } else {
@@ -1391,11 +1447,38 @@ try {
                         </div>
 
                         <?php
-                        $dbFileSize = 'N/A';
-                        $dbFilePath = dirname(__DIR__) . '/database/database.sqlite';
-                        if (is_file($dbFilePath)) {
-                            $bytes = filesize($dbFilePath);
-                            $dbFileSize = round($bytes / 1024, 2) . ' KB (' . number_format($bytes) . ' bytes)';
+                        $activeDriver = strtolower((string)$pdo->getAttribute(PDO::ATTR_DRIVER_NAME));
+                        if (in_array($activeDriver, ['pgsql', 'postgres', 'postgresql'], true)) {
+                            $engineLabel = 'Supabase PostgreSQL (Cloud Database)';
+                            $engineIcon = 'fa-cloud';
+                            $engineBg = 'rgba(62, 207, 142, 0.15)';
+                            $engineColor = '#3ECF8E';
+                            try {
+                                $st = $pdo->query("SELECT pg_size_pretty(pg_database_size(current_database()))");
+                                $dbFileSize = ($st->fetchColumn() ?: 'Cloud Allocated') . ' (Supabase)';
+                            } catch (Throwable $e) {
+                                $dbFileSize = 'Managed Cloud Storage';
+                            }
+                            $backupDesc = 'Generates a complete standalone timestamped .sql database export';
+                        } elseif (in_array($activeDriver, ['mysql', 'mariadb'], true)) {
+                            $engineLabel = 'MySQL / MariaDB';
+                            $engineIcon = 'fa-database';
+                            $engineBg = 'rgba(47, 128, 237, 0.15)';
+                            $engineColor = '#2F80ED';
+                            $dbFileSize = 'Server Managed';
+                            $backupDesc = 'Generates a database export';
+                        } else {
+                            $engineLabel = 'SQLite WAL Mode';
+                            $engineIcon = 'fa-file-alt';
+                            $engineBg = 'rgba(16, 185, 129, 0.15)';
+                            $engineColor = '#10B981';
+                            $dbFileSize = 'N/A';
+                            $dbFilePath = dirname(__DIR__) . '/database/database.sqlite';
+                            if (is_file($dbFilePath)) {
+                                $bytes = filesize($dbFilePath);
+                                $dbFileSize = round($bytes / 1024, 2) . ' KB (' . number_format($bytes) . ' bytes)';
+                            }
+                            $backupDesc = 'Generates a complete standalone timestamped .sqlite database archive';
                         }
                         ?>
 
@@ -1405,8 +1488,8 @@ try {
                                 <div class="desc">Active database connection driver</div>
                             </div>
                             <div class="control">
-                                <span class="role-badge" style="background: rgba(16, 185, 129, 0.15); color: #10B981; font-weight: 600;">
-                                    <i class="fas fa-server"></i> SQLite WAL Mode
+                                <span class="role-badge" style="background: <?php echo $engineBg; ?>; color: <?php echo $engineColor; ?>; font-weight: 600;">
+                                    <i class="fas <?php echo $engineIcon; ?>"></i> <?php echo htmlspecialchars($engineLabel); ?>
                                 </span>
                             </div>
                         </div>
@@ -1417,14 +1500,14 @@ try {
                                 <div class="desc">Current operational data footprint</div>
                             </div>
                             <div class="control">
-                                <strong style="font-size: 13px; color: var(--text);"><?php echo $dbFileSize; ?></strong>
+                                <strong style="font-size: 13px; color: var(--text);"><?php echo htmlspecialchars($dbFileSize); ?></strong>
                             </div>
                         </div>
 
                         <div class="setting-item" style="border-bottom: none; padding-top: 18px;">
                             <div class="info">
                                 <div class="label">Download Database Backup</div>
-                                <div class="desc">Generates a complete standalone timestamped .sqlite database archive</div>
+                                <div class="desc"><?php echo htmlspecialchars($backupDesc); ?></div>
                             </div>
                             <div class="control">
                                 <a href="settings.php?action=backup_db" class="btn btn-success" style="display: inline-flex; align-items: center; gap: 8px; font-weight: 600; padding: 10px 18px;">

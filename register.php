@@ -27,7 +27,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // 3. SECURELY HASH THE PASSWORD (PHP standard)
                 $hashedPassword = password_hash($password, PASSWORD_BCRYPT);
 
-                // 4. Insert the user record into the SQLite app database
+                // 4. Insert the user record into the database (Supabase PostgreSQL / Cloud DB)
                 $sql = "INSERT INTO users (username, email, password, role, full_name, is_active, is_archived) 
                         VALUES (?, ?, ?, ?, ?, true, false)";
 
@@ -37,9 +37,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $message = "Account created successfully! <a href='login.php'>Click here to login</a>";
             }
         } catch (PDOException $e) {
-            // Catch duplicate emails or database errors
-            if (strpos($e->getMessage(), 'UNIQUE constraint failed') !== false) {
-                $error = 'An account with that email address already exists. Please use a different email address.';
+            // Catch duplicate emails or database errors (both SQLite and PostgreSQL)
+            if (stripos($e->getMessage(), 'unique constraint') !== false || stripos($e->getMessage(), 'duplicate key') !== false) {
+                $error = 'An account with that email address or username already exists. Please use a different one.';
             } else {
                 $error = "Registration failed: " . $e->getMessage();
             }
