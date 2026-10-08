@@ -22,8 +22,9 @@ RUN composer install --no-interaction --no-ansi --no-progress --prefer-dist --op
 
 COPY laravel-app/ ./
 
-RUN chown -R www-data:www-data /var/www/html \
-    && chmod -R 755 storage bootstrap/cache \
+RUN mkdir -p storage/logs storage/framework/cache storage/framework/sessions storage/framework/views bootstrap/cache \
+    && chown -R www-data:www-data /var/www/html \
+    && chmod -R 775 storage bootstrap/cache \
     && cp -n .env.example .env || true \
     && php artisan key:generate --force \
     && php artisan config:cache \

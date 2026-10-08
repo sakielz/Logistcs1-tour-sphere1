@@ -521,6 +521,27 @@ if (!function_exists('initializeSqliteDatabase')) {
     }
 }
 
+if (!function_exists('initializePostgresDatabase')) {
+    function initializePostgresDatabase(PDO $pdo) {
+        try {
+            $check = $pdo->query("SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users' LIMIT 1");
+            if ($check && $check->fetchColumn()) {
+                return; // Tables already initialized
+            }
+
+            $schemaFile = dirname(__DIR__) . '/database/supabase_schema.sql';
+            if (is_file($schemaFile)) {
+                $sql = file_get_contents($schemaFile);
+                if (!empty($sql)) {
+                    $pdo->exec($sql);
+                }
+            }
+        } catch (Throwable $e) {
+            error_log("[POSTGRES INIT NOTICE] Automatic schema bootstrap: " . $e->getMessage());
+        }
+    }
+}
+
 $pdo = null;
 try {
     if (strtolower($driver) === 'sqlite') {
@@ -562,6 +583,8 @@ try {
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => false,
         ]);
+
+        initializePostgresDatabase($pdo);
     } else {
         $dsnPort = !empty($port) ? $port : '3306';
         $dsn = 'mysql:host=' . $host . ';port=' . $dsnPort . ';dbname=' . $dbName . ';charset=utf8mb4';
@@ -591,6 +614,26 @@ try {
 if ($pdo instanceof PDO) {
     $databaseDriver = strtolower($pdo->getAttribute(PDO::ATTR_DRIVER_NAME));
 
+    $tableExists = function(PDO $p, string $tbl) use ($databaseDriver): bool {
+        try {
+            if ($databaseDriver === 'sqlite') {
+                $st = $p->prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?");
+                $st->execute([$tbl]);
+                return (bool)$st->fetchColumn();
+            } elseif (in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true)) {
+                $st = $p->prepare("SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ?");
+                $st->execute([$tbl]);
+                return (bool)$st->fetchColumn();
+            } else {
+                $st = $p->prepare("SHOW TABLES LIKE ?");
+                $st->execute([$tbl]);
+                return (bool)$st->fetchColumn();
+            }
+        } catch (Throwable $e) {
+            return false;
+        }
+    };
+
     foreach ([
         ['products', 'brand', 'VARCHAR(150)'],
         ['suppliers', 'supplier_type', "VARCHAR(100) NOT NULL DEFAULT 'general'"],
@@ -600,14 +643,23 @@ if ($pdo instanceof PDO) {
         ['purchase_order_items', 'received_quantity', 'INTEGER DEFAULT 0'],
         ['users', 'two_factor_secret', 'TEXT'],
         ['users', 'two_factor_enabled', 'INTEGER DEFAULT 0'],
-        ['users', 'two_factor_confirmed_at', 'DATETIME'],
-        ['users', 'two_factor_recovery_codes_generated_at', 'DATETIME'],
+        ['users', 'two_factor_confirmed_at', in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true) ? 'TIMESTAMPTZ' : 'DATETIME'],
+        ['users', 'two_factor_recovery_codes_generated_at', in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true) ? 'TIMESTAMPTZ' : 'DATETIME'],
         ['users', 'two_factor_time_offset', 'INTEGER DEFAULT 0'],
     ] as [$table, $column, $definition]) {
+        if (!$tableExists($pdo, $table)) {
+            continue; // Table does not exist yet (cleanly skip to avoid aborting transactions)
+        }
         try {
-            $pdo->query("SELECT $column FROM $table WHERE 1 = 0");
-        } catch (PDOException $e) {
-            $pdo->exec("ALTER TABLE $table ADD COLUMN $column $definition");
+            if (in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true)) {
+                $pdo->exec("ALTER TABLE $table ADD COLUMN IF NOT EXISTS $column $definition");
+            } else {
+                $pdo->query("SELECT $column FROM $table WHERE 1 = 0");
+            }
+        } catch (Throwable $e) {
+            try {
+                $pdo->exec("ALTER TABLE $table ADD COLUMN $column $definition");
+            } catch (Throwable $ignored) {}
         }
     }
 

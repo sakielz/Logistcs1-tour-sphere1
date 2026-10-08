@@ -66,7 +66,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $_SESSION['last_activity'] = time();
                     unset($_SESSION['2fa_pending_user']);
 
-                    $pdo->prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?")->execute([$pendingUser['id']]);
+                    $pdo->prepare("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?")->execute([$pendingUser['id']]);
                     logAudit($pendingUser['id'], 'login', 'auth', 'User authenticated via single-use emergency recovery code');
 
                     header('Location: admin/dashboard.php');
@@ -113,7 +113,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $_SESSION['last_activity'] = time();
                         unset($_SESSION['2fa_pending_user']);
 
-                        $pdo->prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?")->execute([$pendingUser['id']]);
+                        $pdo->prepare("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?")->execute([$pendingUser['id']]);
                         logAudit($pendingUser['id'], 'login', 'auth', 'User authenticated via Google Authenticator 2FA');
 
                         header('Location: admin/dashboard.php');
@@ -176,7 +176,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $newHash = password_hash($password, PASSWORD_DEFAULT);
                             $pdo->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([$newHash, $user['id']]);
                         }
-                        $pdo->prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?")->execute([$user['id']]);
+                        $pdo->prepare("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?")->execute([$user['id']]);
                         logAudit($user['id'], 'login', 'auth', 'User logged in');
 
                         header('Location: admin/dashboard.php');

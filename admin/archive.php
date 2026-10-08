@@ -75,8 +75,7 @@ function getTableSchema(PDO $pdo, string $table, array &$cache): array {
     ];
 
     try {
-        // Validate the table name against the schema before using it
-        $driverName = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $driverName = strtolower((string)$pdo->getAttribute(PDO::ATTR_DRIVER_NAME));
         if ($driverName === 'sqlite') {
             $stmt = $pdo->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?");
             $stmt->execute([$table]);
@@ -90,6 +89,19 @@ function getTableSchema(PDO $pdo, string $table, array &$cache): array {
             if (empty($cols)) {
                 return $cache[$table] = $info;
             }
+        } elseif (in_array($driverName, ['pgsql', 'postgres', 'postgresql'], true)) {
+            $stmt = $pdo->prepare("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ?");
+            $stmt->execute([$table]);
+            if (!$stmt->fetchColumn()) {
+                return $cache[$table] = $info;
+            }
+
+            $stmt = $pdo->prepare("SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ? ORDER BY ordinal_position");
+            $stmt->execute([$table]);
+            $cols = $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
+            if (empty($cols)) {
+                return $cache[$table] = $info;
+            }
         } else {
             $stmt = $pdo->prepare("SHOW TABLES LIKE ?");
             $stmt->execute([$table]);
@@ -97,7 +109,8 @@ function getTableSchema(PDO $pdo, string $table, array &$cache): array {
                 return $cache[$table] = $info;
             }
 
-            $stmt = $pdo->query("SHOW COLUMNS FROM `$table`");
+            $cleanTable = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
+            $stmt = $pdo->query("SHOW COLUMNS FROM $cleanTable");
             $cols = $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
             if (empty($cols)) {
                 return $cache[$table] = $info;
@@ -149,15 +162,16 @@ try {
 // ============================================
 function buildArchiveWhere(PDO $pdo, string $table, array $schema, string $search, string $dateFrom, string $dateTo, array &$params): string {
     // The archive column MUST exist for the table to participate
-    $col = $schema['archive_column'];
-    $where = "(`$col` = 1 OR `$col` = '1' OR `$col` = 'true' OR `$col` = TRUE)";
+    $col = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$schema['archive_column']);
+    $where = "($col = 1 OR $col = '1' OR $col = 'true' OR $col = TRUE)";
     $params = [];
 
     if ($search !== '') {
         $searchClauses = [];
         foreach ($schema['columns'] as $c) {
+            $cleanC = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$c);
             // Only search TEXT-ish columns; skip binary and numeric-only for perf
-            $searchClauses[] = "`$c` LIKE ?";
+            $searchClauses[] = "CAST($cleanC AS TEXT) LIKE ?";
             $params[] = '%' . $search . '%';
         }
         if (!empty($searchClauses)) {
@@ -166,11 +180,11 @@ function buildArchiveWhere(PDO $pdo, string $table, array $schema, string $searc
     }
 
     if ($dateFrom !== '' && $schema['has_created_at']) {
-        $where .= ' AND DATE(`created_at`) >= ?';
+        $where .= ' AND created_at >= ?';
         $params[] = $dateFrom;
     }
     if ($dateTo !== '' && $schema['has_created_at']) {
-        $where .= ' AND DATE(`created_at`) <= ?';
+        $where .= ' AND created_at <= ?';
         $params[] = $dateTo;
     }
 
@@ -181,16 +195,16 @@ function buildArchiveWhere(PDO $pdo, string $table, array $schema, string $searc
 // ACTION: PURGE (auto-delete old archived records)
 // ============================================
 if ($action === 'purge' && isset($_GET['table'])) {
-    $table = $_GET['table'];
+    $table = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$_GET['table']);
     $days  = isset($_GET['days']) ? max(1, (int)$_GET['days']) : $retentionDays;
 
     $schema = getTableSchema($pdo, $table, $schemaCache);
 
     if (in_array($table, $allowedTables, true) && $schema['exists'] && $schema['has_archived'] && $schema['has_created_at']) {
         try {
-            $col = $schema['archive_column'];
+            $col = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$schema['archive_column']);
             $purgeDate = date('Y-m-d H:i:s', strtotime("-$days days"));
-            $stmt = $pdo->prepare("DELETE FROM `$table` WHERE `$col` = 1 AND `created_at` < ?");
+            $stmt = $pdo->prepare("DELETE FROM $table WHERE $col = 1 AND created_at < ?");
             $stmt->execute([$purgeDate]);
             $deleted = $stmt->rowCount();
 
@@ -203,7 +217,7 @@ if ($action === 'purge' && isset($_GET['table'])) {
             $_SESSION['error'] = "Error purging records: " . $e->getMessage();
         }
     } else {
-        $_SESSION['error'] = "Cannot purge `$table` — the table is missing an archive column or created_at column.";
+        $_SESSION['error'] = "Cannot purge $table — the table is missing an archive column or created_at column.";
     }
     header('Location: archive.php?tab=' . urlencode($tab));
     exit();
@@ -213,15 +227,15 @@ if ($action === 'purge' && isset($_GET['table'])) {
 // ACTION: BULK RESTORE
 // ============================================
 if ($action === 'bulk_restore' && isset($_POST['ids'], $_POST['table'])) {
-    $table = $_POST['table'];
+    $table = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$_POST['table']);
     $ids   = array_values(array_filter(array_map('intval', (array)$_POST['ids'])));
     $schema = getTableSchema($pdo, $table, $schemaCache);
 
     if (in_array($table, $allowedTables, true) && $schema['exists'] && $schema['has_archived'] && !empty($ids)) {
         try {
-            $col = $schema['archive_column'];
+            $col = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$schema['archive_column']);
             $placeholders = implode(',', array_fill(0, count($ids), '?'));
-            $stmt = $pdo->prepare("UPDATE `$table` SET `$col` = 0 WHERE `id` IN ($placeholders)");
+            $stmt = $pdo->prepare("UPDATE $table SET $col = 0 WHERE id IN ($placeholders)");
             $stmt->execute($ids);
             $restored = $stmt->rowCount();
 
@@ -244,15 +258,15 @@ if ($action === 'bulk_restore' && isset($_POST['ids'], $_POST['table'])) {
 // ACTION: EXPORT CSV
 // ============================================
 if ($action === 'export' && isset($_GET['table'])) {
-    $table = $_GET['table'];
+    $table = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$_GET['table']);
     $schema = getTableSchema($pdo, $table, $schemaCache);
 
     if (in_array($table, $allowedTables, true) && $schema['exists'] && $schema['has_archived']) {
         try {
             $params = [];
             $where = buildArchiveWhere($pdo, $table, $schema, $search, $dateFrom, $dateTo, $params);
-            $orderCol = $schema['order_column'];
-            $sql = "SELECT * FROM `$table` WHERE $where ORDER BY `$orderCol` DESC";
+            $orderCol = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$schema['order_column']);
+            $sql = "SELECT * FROM $table WHERE $where ORDER BY $orderCol DESC";
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
             $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -284,14 +298,14 @@ if ($action === 'export' && isset($_GET['table'])) {
 // ACTION: RESTORE SINGLE
 // ============================================
 if ($action === 'restore' && isset($_GET['table'], $_GET['id'])) {
-    $table = $_GET['table'];
+    $table = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$_GET['table']);
     $id    = (int)$_GET['id'];
     $schema = getTableSchema($pdo, $table, $schemaCache);
 
     if (in_array($table, $allowedTables, true) && $schema['exists'] && $schema['has_archived']) {
         try {
-            $col = $schema['archive_column'];
-            $stmt = $pdo->prepare("UPDATE `$table` SET `$col` = 0 WHERE `id` = ?");
+            $col = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$schema['archive_column']);
+            $stmt = $pdo->prepare("UPDATE $table SET $col = 0 WHERE id = ?");
             $stmt->execute([$id]);
             if (function_exists('logAudit')) {
                 logAudit($currentUserId, 'restore_record', 'archive',
@@ -312,13 +326,13 @@ if ($action === 'restore' && isset($_GET['table'], $_GET['id'])) {
 // ACTION: PERMANENT DELETE
 // ============================================
 if ($action === 'delete' && isset($_GET['table'], $_GET['id'])) {
-    $table = $_GET['table'];
+    $table = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$_GET['table']);
     $id    = (int)$_GET['id'];
     $schema = getTableSchema($pdo, $table, $schemaCache);
 
     if (in_array($table, $allowedTables, true) && $schema['exists']) {
         try {
-            $stmt = $pdo->prepare("DELETE FROM `$table` WHERE `id` = ?");
+            $stmt = $pdo->prepare("DELETE FROM $table WHERE id = ?");
             $stmt->execute([$id]);
             if (function_exists('logAudit')) {
                 logAudit($currentUserId, 'permanent_delete', 'archive',
@@ -341,14 +355,14 @@ if ($action === 'delete' && isset($_GET['table'], $_GET['id'])) {
 $viewRecord = null;
 $viewTable  = null;
 if ($action === 'view' && isset($_GET['table'], $_GET['id'])) {
-    $table = $_GET['table'];
+    $table = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$_GET['table']);
     $id    = (int)$_GET['id'];
     $schema = getTableSchema($pdo, $table, $schemaCache);
 
     if (in_array($table, $allowedTables, true) && $schema['exists'] && $schema['has_archived']) {
         try {
-            $col = $schema['archive_column'];
-            $stmt = $pdo->prepare("SELECT * FROM `$table` WHERE `id` = ? AND (`$col` = 1 OR `$col` = '1' OR `$col` = 'true' OR `$col` = TRUE)");
+            $col = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$schema['archive_column']);
+            $stmt = $pdo->prepare("SELECT * FROM $table WHERE id = ? AND ($col = 1 OR $col = '1' OR $col = 'true' OR $col = TRUE)");
             $stmt->execute([$id]);
             $viewRecord = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
             $viewTable  = $viewRecord ? $table : null;
@@ -368,34 +382,35 @@ $tableErrors = [];
 $tableStatus = []; // diagnostic per-table status
 
 foreach ($tables as $table => $info) {
-    $schema = getTableSchema($pdo, $table, $schemaCache);
-    $tableStatus[$table] = $schema;
+    $cleanTable = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$table);
+    $schema = getTableSchema($pdo, $cleanTable, $schemaCache);
+    $tableStatus[$cleanTable] = $schema;
 
     // If table doesn't exist or has no archive column, skip cleanly
     if (!$schema['exists']) {
-        $archivedData[$table] = [];
-        $tabCounts[$table] = 0;
-        $tableErrors[$table] = "Table does not exist";
+        $archivedData[$cleanTable] = [];
+        $tabCounts[$cleanTable] = 0;
+        $tableErrors[$cleanTable] = "Table does not exist";
         continue;
     }
     if (!$schema['has_archived']) {
-        $archivedData[$table] = [];
-        $tabCounts[$table] = 0;
-        $tableErrors[$table] = "No archive column (expected is_archived)";
+        $archivedData[$cleanTable] = [];
+        $tabCounts[$cleanTable] = 0;
+        $tableErrors[$cleanTable] = "No archive column (expected is_archived)";
         continue;
     }
 
     try {
         $params = [];
-        $where  = buildArchiveWhere($pdo, $table, $schema, $search, $dateFrom, $dateTo, $params);
-        $orderCol = $schema['order_column'];
-        $sql = "SELECT * FROM `$table` WHERE $where ORDER BY `$orderCol` DESC";
+        $where  = buildArchiveWhere($pdo, $cleanTable, $schema, $search, $dateFrom, $dateTo, $params);
+        $orderCol = preg_replace('/[^a-zA-Z0-9_]/', '', (string)$schema['order_column']);
+        $sql = "SELECT * FROM $cleanTable WHERE $where ORDER BY $orderCol DESC";
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
         $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        $archivedData[$table] = $records;
-        $tabCounts[$table] = count($records);
+        $archivedData[$cleanTable] = $records;
+        $tabCounts[$cleanTable] = count($records);
         $totalArchived += count($records);
     } catch (PDOException $e) {
         error_log("[ARCHIVE] fetch failed for $table: " . $e->getMessage());

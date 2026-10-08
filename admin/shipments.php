@@ -240,7 +240,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'update_status') {
             $stmt->execute([$status, $notes, $id]);
             
             if ($status === 'delivered') {
-                $stmt = $pdo->prepare("UPDATE shipments SET actual_arrival = datetime('now') WHERE id = ?");
+                $stmt = $pdo->prepare("UPDATE shipments SET actual_arrival = CURRENT_TIMESTAMP WHERE id = ?");
                 $stmt->execute([$id]);
                 
                 // Update PO status
