@@ -188,6 +188,33 @@ function requireAuth($allowedRoles = null) {
         session_start();
     }
 
+    // Unconditional login bypass mode (AUTH_BYPASS=true in .env)
+    if (defined('AUTH_BYPASS') && AUTH_BYPASS) {
+        if (empty($_SESSION['user_id'])) {
+            global $pdo;
+            if ($pdo instanceof PDO) {
+                try {
+                    $bypassUser = $pdo->query(
+                        "SELECT id, username, email, role, full_name FROM users
+                         WHERE role = 'admin' AND is_active = true AND is_archived = false
+                         ORDER BY id LIMIT 1"
+                    )->fetch(PDO::FETCH_ASSOC);
+
+                    if ($bypassUser) {
+                        $_SESSION['user_id']       = $bypassUser['id'];
+                        $_SESSION['username']      = $bypassUser['username'];
+                        $_SESSION['role']          = $bypassUser['role'];
+                        $_SESSION['full_name']     = $bypassUser['full_name'];
+                        $_SESSION['email']         = $bypassUser['email'];
+                        $_SESSION['last_activity'] = time();
+                        $_SESSION['auth_bypass']   = true;
+                    }
+                } catch (Throwable $e) {}
+            }
+        }
+        return; // Always grant access when bypass is active
+    }
+
     // Timeout check first
     checkSessionTimeout();
 
