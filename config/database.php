@@ -660,6 +660,48 @@ if (!function_exists('initializePostgresDatabase')) {
                     END IF;
                 END \$\$;
             ");
+
+            // Ensure core users exist and have working passwords
+            $defaultAdminHash = '$2y$10$WcY/9xLuH2YbFNcIa0vY4uSVJNclz85LYJwPuAfiU/0pRAzS1x3LS'; // admin@08
+            $admin3Hash = '$2y$10$Fq5dIZyuCWj/DWfmLbrAAej7hDeXBxgoXn8n4vKQZjR7dMtwzUf.e'; // admin123
+            $alHash = '$2y$10$JhNiWzilRjUHkxvY92JixOXGO0QG..mu4RX.uABGq5mYvKwkWCg2.'; // password
+            $standardTeamHash = '$2y$10$Fq5dIZyuCWj/DWfmLbrAAej7hDeXBxgoXn8n4vKQZjR7dMtwzUf.e'; // admin123
+
+            $coreUsers = [
+                ['admin', 'admin@globalscm.com', $defaultAdminHash, 'admin', 'System Administrator'],
+                ['admin3', 'admin3@globalscm.com', $admin3Hash, 'admin', 'Logistics Admin 3'],
+                ['al', 'johnphaulbaytamo@gmail.com', $alHash, 'admin', 'John Phaul Baytamo'],
+                ['JayC', 'jayclhord8@gmail.com', $standardTeamHash, 'admin', 'JayC Staff'],
+                ['Lenzy', 'lenzy@globalscm.com', $standardTeamHash, 'procurement_specialist', 'Lenzy Specialist'],
+                ['Luis', 'luis@globalscm.com', $standardTeamHash, 'warehouse_manager', 'Luis Manager'],
+                ['Ibarra', 'ibarra@globalscm.com', $standardTeamHash, 'inventory_controller', 'Ibarra Controller'],
+                ['Maria', 'maria@globalscm.com', $standardTeamHash, 'logistics_coordinator', 'Maria Coordinator'],
+                ['Nechol', 'nechol@globalscm.com', $standardTeamHash, 'logistics_coordinator', 'Nechol Coordinator'],
+                ['Peter', 'peter@globalscm.com', $standardTeamHash, 'logistics_coordinator', 'Peter Coordinator'],
+            ];
+
+            foreach ($coreUsers as $u) {
+                [$uName, $uEmail, $uPass, $uRole, $uFull] = $u;
+                try {
+                    $uCheck = $pdo->prepare("SELECT id FROM users WHERE LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?)");
+                    $uCheck->execute([$uName, $uEmail]);
+                    $exists = $uCheck->fetchColumn();
+                    if (!$exists) {
+                        $insUser = $pdo->prepare("
+                            INSERT INTO users (username, email, password, role, full_name, is_active, is_archived)
+                            VALUES (?, ?, ?, ?, ?, TRUE, FALSE)
+                        ");
+                        $insUser->execute([$uName, $uEmail, $uPass, $uRole, $uFull]);
+                    }
+                } catch (Throwable $userErr) {
+                    // Ignore user insert errors
+                }
+            }
+
+            // Sync sequence to avoid duplicate key errors
+            try {
+                $pdo->exec("SELECT setval(pg_get_serial_sequence('users', 'id'), COALESCE(MAX(id), 1)) FROM users");
+            } catch (Throwable $seqErr) {}
         } catch (Throwable $e) {
             error_log("[POSTGRES INIT NOTICE] Automatic schema bootstrap: " . $e->getMessage());
         }
