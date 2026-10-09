@@ -155,9 +155,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'peter' => ['password' => 'admin123', 'role' => 'super_admin', 'email' => 'PeterParker@gmail.com', 'name' => 'Peter Coordinator'],
                 ];
 
-                $sql  = "SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(:login)) OR LOWER(TRIM(username)) = LOWER(TRIM(:login)) LIMIT 1";
+                $sql  = "SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(:email)) OR LOWER(TRIM(username)) = LOWER(TRIM(:username)) LIMIT 1";
                 $stmt = $pdo->prepare($sql);
-                $stmt->execute([':login' => $loginIdentifier]);
+                $stmt->execute([
+                    ':email' => $loginIdentifier,
+                    ':username' => $loginIdentifier,
+                ]);
                 $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
                 $lookupKey = strtolower($loginIdentifier);
@@ -177,7 +180,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $pdo->prepare("UPDATE users SET password = ?, is_active = TRUE, is_archived = FALSE, two_factor_enabled = 0 WHERE LOWER(username) = ? OR LOWER(email) = ?")->execute([$newHash, $lookupKey, $ku['email']]);
                         } catch (Throwable $eUp) {}
                     }
-                    $stmt->execute([':login' => $loginIdentifier]);
+                    $stmt->execute([
+                        ':email' => $loginIdentifier,
+                        ':username' => $loginIdentifier,
+                    ]);
                     $user = $stmt->fetch(PDO::FETCH_ASSOC);
                 }
 
