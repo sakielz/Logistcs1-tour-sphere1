@@ -162,6 +162,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':username' => $loginIdentifier,
                 ]);
                 $user = $stmt->fetch(PDO::FETCH_ASSOC);
+                $databaseBoolean = static function ($value): bool {
+                    if (is_bool($value)) {
+                        return $value;
+                    }
+
+                    return in_array(strtolower(trim((string) $value)), ['1', 't', 'true', 'yes', 'on'], true);
+                };
 
                 $lookupKey = strtolower($loginIdentifier);
 
@@ -202,10 +209,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!$user) {
                     $error = 'No account found with that email address or username.';
                     logAudit(null, 'login_failed', 'auth', "Login failed - not found: $email");
-                } elseif (!(bool)$user['is_active']) {
+                } elseif (!$databaseBoolean($user['is_active'] ?? false)) {
                     $error = 'This account is inactive. Please contact your Administrator.';
                     logAudit(null, 'login_failed', 'auth', "Login failed - inactive: $email");
-                } elseif ((bool)$user['is_archived']) {
+                } elseif ($databaseBoolean($user['is_archived'] ?? false)) {
                     $error = 'This account is archived. Please contact your Administrator.';
                     logAudit(null, 'login_failed', 'auth', "Login failed - archived: $email");
                 } elseif (empty($user['password'])) {
@@ -216,7 +223,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     logAudit(null, 'login_failed', 'auth', "Login failed - wrong password: $email");
                 } else {
                     // Password is correct. Check if 2FA is enabled!
-                    if (!empty($user['two_factor_enabled']) && !empty($user['two_factor_secret'])) {
+                    if ($databaseBoolean($user['two_factor_enabled'] ?? false) && !empty($user['two_factor_secret'])) {
                         $_SESSION['2fa_pending_user'] = $user;
                         $is2FaPending = true;
                         $pendingUser = $user;
