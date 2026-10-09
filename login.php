@@ -358,14 +358,8 @@ if (isset($_GET['timeout']) && $_GET['timeout'] === '1') {
             display: flex;
             align-items: center;
             justify-content: center;
-<<<<<<< HEAD
             background: var(--bg-base);
             color: var(--text-heading);
-=======
-            overflow-x: hidden;
-            overflow-y: auto;
-            background: var(--brand-dark);
->>>>>>> 30ca05dcbddea615d1e3fdb2dfdb6a68ab99204d
             position: relative;
             overflow-x: hidden;
             transition: background 0.35s ease, color 0.35s ease;
@@ -743,7 +737,6 @@ if (isset($_GET['timeout']) && $_GET['timeout'] === '1') {
             border-color: var(--brand-primary);
         }
 
-<<<<<<< HEAD
         .forgot-link {
             color: var(--brand-primary);
             text-decoration: none;
@@ -934,13 +927,6 @@ if (isset($_GET['timeout']) && $_GET['timeout'] === '1') {
                 top: 14px;
                 right: 14px;
             }
-=======
-        /* ── Responsive ──────────────────────────────── */
-        @media (max-width: 500px) {
-            .login-card { padding: 36px 24px 30px; border-radius: 20px; }
-            .brand-logo  { width: 88px; height: 88px; }
-            .brand-name  { font-size: 22px; }
->>>>>>> 30ca05dcbddea615d1e3fdb2dfdb6a68ab99204d
         }
 
         @media (max-height: 760px) {
@@ -1215,7 +1201,6 @@ if (isset($_GET['timeout']) && $_GET['timeout'] === '1') {
                 });
             }
 
-<<<<<<< HEAD
             // ── Form Submit Loading State ─────────────────────────────
             var form = document.getElementById('loginForm');
             var submitBtn = document.getElementById('submitBtn');
@@ -1226,10 +1211,6 @@ if (isset($_GET['timeout']) && $_GET['timeout'] === '1') {
                     submitBtn.disabled = true;
                 });
             }
-=======
-    </div><!-- /.login-card -->
-</div><!-- /.page-wrapper -->
->>>>>>> 30ca05dcbddea615d1e3fdb2dfdb6a68ab99204d
 
             // ── Enter Key Submission ──────────────────────────────────
             document.addEventListener('keydown', function(e) {
