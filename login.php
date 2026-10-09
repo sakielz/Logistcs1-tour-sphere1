@@ -848,15 +848,6 @@ if (isset($_GET['timeout']) && $_GET['timeout'] === '1') {
             </form>
         <?php endif; ?>
 
-        <!-- Footer hint -->
-        <div class="login-footer">
-            <div class="credentials-hint">
-                <i class="fas fa-shield-alt" style="color:rgba(0,194,255,.6);"></i>
-                &nbsp;Default admin:&nbsp;
-                <strong>admin@globalscm.com</strong>&nbsp;/&nbsp;<strong>admin@08</strong>
-            </div>
-        </div>
-
     </div><!-- /.login-card -->
 </div><!-- /.page-wrapper -->
 
