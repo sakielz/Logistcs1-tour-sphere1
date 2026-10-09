@@ -6,9 +6,12 @@ require_once __DIR__ . '/../config/database.php';
 function testLogin($loginIdentifier, $password) {
     global $pdo;
     echo "Testing login for identifier: '{$loginIdentifier}', password: '{$password}'\n";
-    $sql  = "SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(:login)) OR LOWER(TRIM(username)) = LOWER(TRIM(:login)) LIMIT 1";
+    $sql  = "SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(:email)) OR LOWER(TRIM(username)) = LOWER(TRIM(:username)) LIMIT 1";
     $stmt = $pdo->prepare($sql);
-    $stmt->execute([':login' => $loginIdentifier]);
+    $stmt->execute([
+        ':email' => $loginIdentifier,
+        ':username' => $loginIdentifier,
+    ]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$user) {
@@ -55,4 +58,3 @@ testLogin('al', 'password');
 testLogin('Peter', 'admin123');
 testLogin('JayC', 'admin123');
 testLogin('Lenzy', 'admin123');
-
