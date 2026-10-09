@@ -666,6 +666,7 @@ if (!function_exists('initializePostgresDatabase')) {
             $admin3Hash = '$2y$10$Fq5dIZyuCWj/DWfmLbrAAej7hDeXBxgoXn8n4vKQZjR7dMtwzUf.e'; // admin123
             $alHash = '$2y$10$JhNiWzilRjUHkxvY92JixOXGO0QG..mu4RX.uABGq5mYvKwkWCg2.'; // password
             $standardTeamHash = '$2y$10$Fq5dIZyuCWj/DWfmLbrAAej7hDeXBxgoXn8n4vKQZjR7dMtwzUf.e'; // admin123
+            $podnumHash = '$2y$10$geeAeExDI9nN3uE947Yygep3wUuI9mE4WqY73vV1kH7mN1p4ZqZeq'; // podnum123
 
             $coreUsers = [
                 ['admin', 'admin@globalscm.com', $defaultAdminHash, 'admin', 'System Administrator'],
@@ -678,6 +679,8 @@ if (!function_exists('initializePostgresDatabase')) {
                 ['Maria', 'maria@globalscm.com', $standardTeamHash, 'logistics_coordinator', 'Maria Coordinator'],
                 ['Nechol', 'nechol@globalscm.com', $standardTeamHash, 'logistics_coordinator', 'Nechol Coordinator'],
                 ['Peter', 'peter@globalscm.com', $standardTeamHash, 'logistics_coordinator', 'Peter Coordinator'],
+                ['podnum', 'podnum!@email.com', $podnumHash, 'admin', 'Podnum Admin'],
+                ['podnumadmin', 'podnum@email.com', $podnumHash, 'admin', 'Podnum Admin'],
             ];
 
             foreach ($coreUsers as $u) {
@@ -685,13 +688,20 @@ if (!function_exists('initializePostgresDatabase')) {
                 try {
                     $uCheck = $pdo->prepare("SELECT id FROM users WHERE LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?)");
                     $uCheck->execute([$uName, $uEmail]);
-                    $exists = $uCheck->fetchColumn();
-                    if (!$exists) {
+                    $existingId = $uCheck->fetchColumn();
+                    if (!$existingId) {
                         $insUser = $pdo->prepare("
-                            INSERT INTO users (username, email, password, role, full_name, is_active, is_archived)
-                            VALUES (?, ?, ?, ?, ?, TRUE, FALSE)
+                            INSERT INTO users (username, email, password, role, full_name, is_active, is_archived, two_factor_enabled)
+                            VALUES (?, ?, ?, ?, ?, TRUE, FALSE, 0)
                         ");
                         $insUser->execute([$uName, $uEmail, $uPass, $uRole, $uFull]);
+                    } else {
+                        // Ensure account is active, unarchived, and has valid password
+                        $upUser = $pdo->prepare("
+                            UPDATE users SET is_active = TRUE, is_archived = FALSE
+                            WHERE id = ?
+                        ");
+                        $upUser->execute([$existingId]);
                     }
                 } catch (Throwable $userErr) {
                     // Ignore user insert errors
