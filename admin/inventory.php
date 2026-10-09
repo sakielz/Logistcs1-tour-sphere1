@@ -20,40 +20,6 @@ if (!defined('COLOR_BORDER')) define('COLOR_BORDER', '#EEF2F7');
 // Get theme setting
 $theme = getTheme();
 
-// admin/inventory.php
-// Add this at the top after require_once
-
-// Define color constants if not already defined
-if (!defined('COLOR_PRIMARY')) define('COLOR_PRIMARY', '#2F80ED');
-if (!defined('COLOR_SECONDARY')) define('COLOR_SECONDARY', '#56CCF2');
-if (!defined('COLOR_ACCENT')) define('COLOR_ACCENT', '#27AE60');
-if (!defined('COLOR_BG')) define('COLOR_BG', '#F8FAFC');
-if (!defined('COLOR_CARD')) define('COLOR_CARD', '#FFFFFF');
-if (!defined('COLOR_TEXT')) define('COLOR_TEXT', '#1F2937');
-if (!defined('COLOR_SECONDARY_TEXT')) define('COLOR_SECONDARY_TEXT', '#6B7280');
-if (!defined('COLOR_BORDER')) define('COLOR_BORDER', '#EEF2F7');
-
-// Get theme setting at the top
-$theme = 'light';
-try {
-    $stmt = $pdo->query("SELECT setting_value FROM system_settings WHERE setting_key = 'theme'");
-    $result = $stmt->fetch(PDO::FETCH_ASSOC);
-    if ($result) {
-        $theme = $result['setting_value'];
-    }
-} catch (Exception $e) {
-    $theme = 'light';
-}
-// Define color constants if not already defined
-if (!defined('COLOR_PRIMARY')) define('COLOR_PRIMARY', '#2F80ED');
-if (!defined('COLOR_SECONDARY')) define('COLOR_SECONDARY', '#56CCF2');
-if (!defined('COLOR_ACCENT')) define('COLOR_ACCENT', '#27AE60');
-if (!defined('COLOR_BG')) define('COLOR_BG', '#F8FAFC');
-if (!defined('COLOR_CARD')) define('COLOR_CARD', '#FFFFFF');
-if (!defined('COLOR_TEXT')) define('COLOR_TEXT', '#1F2937');
-if (!defined('COLOR_SECONDARY_TEXT')) define('COLOR_SECONDARY_TEXT', '#6B7280');
-if (!defined('COLOR_BORDER')) define('COLOR_BORDER', '#EEF2F7');
-
 // ============================================
 // generateBarcode() and generateSerialNumber() are defined in includes/barcode.php
 // validateAndConsumeInventoryBatches() is defined in includes/function.php
@@ -1503,7 +1469,7 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                             <th>Price</th>
                             <th>Next Expiry</th>
                             <th>Status</th>
-                            <th>Actions</th>
+                            <th style="text-align: center; min-width: 170px;">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -1557,7 +1523,7 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                                     $isCriticalStock = (int)$product['current_stock'] <= 0;
                                     $isLowStock = (int)$product['current_stock'] <= (int)$product['reorder_point'];
                                     $dotClass = $isLowStock ? 'red' : 
-                                               ($stockPercent < 30 ? 'yellow' : 'green');
+                                                ($stockPercent < 30 ? 'yellow' : 'green');
                                     ?>
                                     <span class="stock-dot <?php echo $dotClass; ?>"></span>
                                     <?php echo number_format($product['current_stock']); ?>
@@ -1585,8 +1551,8 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                                     <?php echo ucfirst($product['status']); ?>
                                 </span>
                             </td>
-                            <td>
-                                <div class="action-buttons">
+                            <td style="white-space: nowrap; text-align: center; min-width: 170px;">
+                                <div class="action-buttons" style="justify-content: center;">
                                     <?php if (!$showArchived): ?>
                                     <button type="button" onclick="openConsumeModal(<?php echo (int)$product['id']; ?>, this)"
                                         data-product-name="<?php echo htmlspecialchars($product['product_name'], ENT_QUOTES); ?>"
@@ -1594,29 +1560,29 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                                         data-current-stock="<?php echo (int)$product['current_stock']; ?>"
                                         data-warehouse-stocks="<?php echo htmlspecialchars(json_encode($product['warehouse_stocks']), ENT_QUOTES); ?>"
                                         class="btn btn-danger btn-sm" title="Consume Stock">
-                                        <i class="fas fa-minus-circle"></i> Consume
+                                        <i class="fas fa-minus-circle"></i>
                                     </button>
                                     <button type="button" onclick="openStockAdjust(<?php echo (int)$product['id']; ?>, this)"
                                         data-product-name="<?php echo htmlspecialchars($product['product_name'], ENT_QUOTES); ?>"
                                         data-warehouse-stocks="<?php echo htmlspecialchars(json_encode($product['warehouse_stocks']), ENT_QUOTES); ?>"
                                         class="btn btn-success btn-sm" title="Adjust Stock">
-                                        <i class="fas fa-sliders-h"></i> Adjust
+                                        <i class="fas fa-sliders-h"></i>
                                     </button>
                                     <a href="inventory.php?action=edit&id=<?php echo $product['id']; ?>" class="btn btn-primary btn-sm" title="Edit Product">
-                                        <i class="fas fa-pen"></i> Edit
+                                        <i class="fas fa-edit"></i>
                                     </a>
                                     <a href="inventory.php?action=archive&id=<?php echo $product['id']; ?>" 
                                        class="btn btn-warning btn-sm" 
                                        title="Archive Product"
                                        onclick="return confirm('Archive this product?');">
-                                        <i class="fas fa-archive"></i> Archive
+                                        <i class="fas fa-archive"></i>
                                     </a>
                                     <?php else: ?>
                                     <a href="inventory.php?action=restore&id=<?php echo $product['id']; ?>" 
-                                       class="btn btn-success btn-sm"
+                                       class="btn btn-success btn-sm" 
                                        title="Restore Product"
                                        onclick="return confirm('Restore this product?');">
-                                        <i class="fas fa-undo"></i> Restore
+                                        <i class="fas fa-undo"></i>
                                     </a>
                                     <?php endif; ?>
                                 </div>
@@ -2067,7 +2033,7 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
             document.getElementById('barcodeModalCodeText').textContent = data.barcode;
 
             // Generate clean QR Server payload
-            var qrPayload = encodeURIComponent('GLOBALSCM|PROD|' + data.sku + '|BC:' + data.barcode + '|PHP' + data.price);
+            var qrPayload = encodeURIComponent('TOURSPHERE|PROD|' + data.sku + '|BC:' + data.barcode + '|PHP' + data.price);
             document.getElementById('qrModalImg').src = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + qrPayload;
 
             // Generate standard Code128 1D Barcode image
@@ -2108,7 +2074,7 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                 '@media print { body { background: #fff; padding: 0; } .label-sticker { border: 1px solid #000; } }' +
                 '</style></head><body>' +
                 '<div class="label-sticker">' +
-                '  <div class="brand-header">GlobalSCM Logistics Product Label</div>' +
+                '  <div class="brand-header">Tour-Sphere Logistics Product Label</div>' +
                 '  <div class="prod-name">' + d.product_name + '</div>' +
                 '  <div class="prod-sku">' + d.sku + '</div>' +
                 '  <div class="qr-wrap"><img src="' + qrSrc + '" alt="QR Code"></div>' +

@@ -38,6 +38,7 @@ $VALID_ROLES = [
     'procurement_officer' => 'Procurement Officer (Can Input Suppliers)',
     'warehouse_manager' => 'Warehouse Manager',
     'inventory_clerk' => 'Inventory Clerk',
+    'supplier' => 'Supplier',
 ];
 
 // Create User

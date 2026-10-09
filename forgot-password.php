@@ -531,13 +531,7 @@ if ($step === 'reset') {
                 
                 <div class="admin-note">
                     <i class="fas fa-info-circle"></i> 
-                    Only administrators can reset passwords. If you are not an admin, please contact your system administrator.
-                </div>
-                
-                <div class="default-credentials">
-                    <strong>Default Admin Credentials:</strong><br>
-                    <span class="label">Email:</span> admin@globalscm.com<br>
-                    <span class="label">Password:</span> admin@08
+                    Only administrators can reset passwords. If you need assistance accessing your account, please contact your system administrator.
                 </div>
                 
                 <div class="back-link">
@@ -567,12 +561,6 @@ if ($step === 'reset') {
                 <div class="alert alert-success">
                     <i class="fas fa-check-circle"></i>
                     <?php echo $success; ?>
-                </div>
-                <div class="alert alert-info">
-                    <i class="fas fa-info-circle"></i>
-                    <strong>Default Admin Credentials:</strong><br>
-                    Email: admin@globalscm.com<br>
-                    Password: admin@08
                 </div>
                 <div class="back-link" style="margin-top: 16px;">
                     <a href="login.php">← Back to Login</a>

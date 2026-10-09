@@ -21,6 +21,17 @@ $showSuppliers = isset($visibility['show_suppliers']) ? $visibility['show_suppli
 $showPurchaseOrders = isset($visibility['show_purchase_orders']) ? $visibility['show_purchase_orders'] : true;
 $showLogistics = isset($visibility['show_logistics']) ? $visibility['show_logistics'] : true;
 
+// Role-based visibility adjustments
+$currentUserRole = strtolower(trim($_SESSION['role'] ?? ''));
+if ($currentUserRole === 'supplier') {
+    $showWarehousing = false;
+    $showInventory = false;
+    $showProcurement = false;
+    $showSuppliers = false;
+    $showPurchaseOrders = false;
+    $showLogistics = false;
+}
+
 // Get theme
 $theme = 'light';
 try {
@@ -66,10 +77,13 @@ $currentPage = basename($_SERVER['PHP_SELF']);
 <nav class="sidebar" id="sidebar">
     <!-- Sidebar Brand -->
     <div class="sidebar-brand">
-        <div>
-            <h2>GlobalSCM</h2>
-            <span>Supply Chain Management</span>
-        </div>
+        <a href="dashboard.php" style="display: flex; align-items: center; gap: 11px; text-decoration: none; color: inherit;">
+            <img src="../assets/image/toursphere_logo.png" alt="Tour-Sphere Logo" class="sidebar-brand-logo" style="width: 40px; height: 40px; border-radius: 50%; object-fit: contain; box-shadow: 0 4px 12px rgba(47, 128, 237, 0.3); border: 1.5px solid rgba(47, 128, 237, 0.25); flex-shrink: 0; background: #ffffff;">
+            <div style="display: flex; flex-direction: column;">
+                <h2>Tour-Sphere</h2>
+                <span>Supply Chain Management</span>
+            </div>
+        </a>
         <button class="sidebar-close" id="sidebarClose" aria-label="Close Sidebar" type="button">
             <i class="fas fa-times"></i>
         </button>
@@ -248,6 +262,33 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     </div>
     <?php endif; ?>
     
+    <!-- ===== SUPPLIER BIDDING MODULE ===== -->
+    <?php if ($currentUserRole === 'supplier'): ?>
+    <div class="nav-section">
+        <div class="nav-section-title" onclick="toggleSection(this)">
+            Bidding Module
+            <span class="collapse-icon"><i class="fas fa-chevron-down"></i></span>
+        </div>
+        <div class="nav-items">
+            <a href="bidding.php" class="nav-item <?php echo $currentPage === 'bidding.php' ? 'active' : ''; ?>">
+                <i class="fas fa-gavel"></i> Freight &amp; Tender Bidding
+                <?php
+                try {
+                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM bidding_tenders WHERE status IN ('open', 'under_evaluation') AND is_archived = 0");
+                    $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
+                    if ($count > 0): ?>
+                    <span class="badge" style="background: #2563EB;"><?php echo $count; ?></span>
+                    <?php endif;
+                } catch (Exception $e) {}
+                ?>
+            </a>
+            <a href="documents.php" class="nav-item <?php echo $currentPage === 'documents.php' ? 'active' : ''; ?>">
+                <i class="fas fa-file-alt"></i> Documents &amp; Rate Sheets
+            </a>
+        </div>
+    </div>
+    <?php endif; ?>
+    
     <!-- ===== LOGISTICS MODULE ===== -->
     <?php if ($showLogistics): ?>
     <div class="nav-section">
@@ -285,6 +326,7 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     <?php endif; ?>
     
     <!-- ===== ANALYTICS ===== -->
+    <?php if ($currentUserRole !== 'supplier'): ?>
     <div class="nav-section">
         <div class="nav-section-title" onclick="toggleSection(this)">
             Analytics
@@ -308,6 +350,7 @@ $currentPage = basename($_SERVER['PHP_SELF']);
             </a>
         </div>
     </div>
+    <?php endif; ?>
     
     <!-- ===== SYSTEM ===== -->
     <div class="nav-section">
@@ -348,6 +391,7 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     </div>
     
     <!-- ===== QUICK CREATE SECTION ===== -->
+    <?php if ($currentUserRole !== 'supplier'): ?>
     <div class="quick-create-section">
         <div class="quick-create-dropdown">
             <button class="quick-create-btn" onclick="toggleQuickCreate()" type="button">
@@ -376,6 +420,7 @@ $currentPage = basename($_SERVER['PHP_SELF']);
             </div>
         </div>
     </div>
+    <?php endif; ?>
 </nav>
 
 <!-- ===== SIDEBAR OVERLAY (Mobile) ===== -->
@@ -757,6 +802,7 @@ $currentPage = basename($_SERVER['PHP_SELF']);
         cursor: pointer !important;
         text-decoration: none !important;
         box-sizing: border-box !important;
+        overflow: hidden !important;
     }
 
     .action-buttons .btn i,

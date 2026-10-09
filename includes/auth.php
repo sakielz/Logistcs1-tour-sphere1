@@ -63,6 +63,12 @@ if (!defined('ROLE_PAGE_MAP')) {
             'dashboard.php',
             'requisitions.php',
         ],
+
+        'supplier' => [
+            'dashboard.php',
+            'bidding.php',
+            'documents.php',
+        ],
     ]);
 }
 
@@ -99,6 +105,11 @@ if (!defined('ROLE_MODULE_PERMS')) {
 
         'employer' => [
             'requisition' => ['view', 'create'],
+        ],
+
+        'supplier' => [
+            'bidding'  => ['view', 'create', 'edit', 'bid'],
+            'document' => ['view', 'create'],
         ],
     ]);
 }

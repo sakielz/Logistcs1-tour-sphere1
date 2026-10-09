@@ -7,7 +7,7 @@ require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/function.php';
 
-requireAuth(['admin', 'super_admin', 'procurement_officer']);
+requireAuth(['admin', 'super_admin', 'procurement_officer', 'supplier']);
 
 if (!defined('COLOR_PRIMARY')) define('COLOR_PRIMARY', '#2F80ED');
 if (!defined('COLOR_SECONDARY')) define('COLOR_SECONDARY', '#56CCF2');
