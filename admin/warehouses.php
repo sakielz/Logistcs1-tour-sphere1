@@ -176,7 +176,7 @@ try {
                            LEFT JOIN inventory_groups g ON g.id = w.group_id
                            LEFT JOIN warehouse_inventory wi ON wi.warehouse_id = w.id
                            WHERE w.is_archived = ?
-                           GROUP BY w.id
+                           GROUP BY w.id, g.group_name
                            ORDER BY w.created_at DESC");
     $stmt->execute([$showArchived]);
     $warehouses = $stmt->fetchAll(PDO::FETCH_ASSOC);

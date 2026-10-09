@@ -5,6 +5,20 @@ require_once __DIR__ . '/../includes/auth.php';
 
 requireAuth('admin');
 
+function archiveTextPreview(string $value, int $limit): string
+{
+    if (function_exists('mb_substr') && function_exists('mb_strlen')) {
+        return mb_substr($value, 0, $limit) . (mb_strlen($value) > $limit ? '…' : '');
+    }
+
+    $characterCount = preg_match_all('/./us', $value, $characters);
+    if ($characterCount === false) {
+        return substr($value, 0, $limit) . (strlen($value) > $limit ? '…' : '');
+    }
+
+    return implode('', array_slice($characters[0], 0, $limit)) . ($characterCount > $limit ? '…' : '');
+}
+
 // ============================================
 // COLOR CONSTANTS
 // ============================================
@@ -1189,14 +1203,14 @@ table tbody tr:last-child td { border-bottom: none; }
                                             <?php if ($identifierValue !== 'N/A'): ?>
                                                 <div style="font-size: 10px; color: var(--secondary-text); margin-top: 2px;">
                                                     <?php echo htmlspecialchars(strtoupper(str_replace('_', ' ', $identifier))); ?>:
-                                                    <?php echo htmlspecialchars(mb_substr((string)$identifierValue, 0, 30)); ?>
+                                                    <?php echo htmlspecialchars(archiveTextPreview((string)$identifierValue, 30)); ?>
                                                 </div>
                                             <?php endif; ?>
                                         </td>
                                         <td>
                                             <strong>#<?php echo (int)$record['id']; ?></strong>
                                             <div style="font-size: 12px; color: var(--secondary-text);">
-                                                <?php echo htmlspecialchars(mb_substr($recordName, 0, 40)) . (mb_strlen($recordName) > 40 ? '…' : ''); ?>
+                                                <?php echo htmlspecialchars(archiveTextPreview((string)$recordName, 40)); ?>
                                             </div>
                                         </td>
                                         <td><?php echo htmlspecialchars($createdBy); ?></td>

@@ -537,8 +537,10 @@ if (!function_exists('initializeSqliteDatabase')) {
 if (!function_exists('initializePostgresDatabase')) {
     function initializePostgresDatabase(PDO $pdo) {
         try {
-            $check = $pdo->query("SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users' LIMIT 1");
-            if (!$check || !$check->fetchColumn()) {
+            $requiredTables = ['users', 'suppliers', 'products', 'procurement_contracts', 'documents'];
+            $tableNames = "'" . implode("','", $requiredTables) . "'";
+            $check = $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ($tableNames)");
+            if (!$check || (int) $check->fetchColumn() < count($requiredTables)) {
                 $schemaFile = dirname(__DIR__) . '/database/supabase_schema.sql';
                 if (is_file($schemaFile)) {
                     $sql = file_get_contents($schemaFile);
@@ -789,7 +791,7 @@ try {
             $pdo = new PDO($dsn, $username, $password, [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                PDO::ATTR_EMULATE_PREPARES => false,
+                PDO::ATTR_EMULATE_PREPARES => true,
             ]);
         } catch (PDOException $pdoEx) {
             if (strpos($pdoEx->getMessage(), 'server does not support SSL') !== false) {
@@ -797,7 +799,7 @@ try {
                 $pdo = new PDO($plainDsn, $username, $password, [
                     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::ATTR_EMULATE_PREPARES => false,
+                    PDO::ATTR_EMULATE_PREPARES => true,
                 ]);
             } else {
                 throw $pdoEx;
@@ -1050,22 +1052,31 @@ if ($pdo instanceof PDO) {
         )";
     }
     $pdo->exec($batchDDL);
-    try {
-        $pdo->query('SELECT origin_batch_id FROM inventory_batches WHERE 1 = 0');
-    } catch (PDOException $e) {
-        $pdo->exec('ALTER TABLE inventory_batches ADD COLUMN origin_batch_id INTEGER');
+    if (in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true)) {
+        $pdo->exec('ALTER TABLE inventory_batches ADD COLUMN IF NOT EXISTS origin_batch_id INTEGER');
+        $pdo->exec("ALTER TABLE products ADD COLUMN IF NOT EXISTS item_type VARCHAR(100) NOT NULL DEFAULT 'general'");
+    } else {
+        try {
+            $pdo->query('SELECT origin_batch_id FROM inventory_batches WHERE 1 = 0');
+        } catch (PDOException $e) {
+            $pdo->exec('ALTER TABLE inventory_batches ADD COLUMN origin_batch_id INTEGER');
+        }
+
+        try {
+            $pdo->query('SELECT item_type FROM products WHERE 1 = 0');
+        } catch (PDOException $e) {
+            $pdo->exec("ALTER TABLE products ADD COLUMN item_type VARCHAR(100) NOT NULL DEFAULT 'general'");
+        }
     }
 
-    try {
-        $pdo->query('SELECT item_type FROM products WHERE 1 = 0');
-    } catch (PDOException $e) {
-        $pdo->exec("ALTER TABLE products ADD COLUMN item_type VARCHAR(100) NOT NULL DEFAULT 'general'");
-    }
-
-    try {
-        $pdo->query('SELECT warehouse_id FROM purchase_orders WHERE 1 = 0');
-    } catch (PDOException $e) {
-        $pdo->exec('ALTER TABLE purchase_orders ADD COLUMN warehouse_id INTEGER');
+    if (in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true)) {
+        $pdo->exec('ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS warehouse_id INTEGER');
+    } else {
+        try {
+            $pdo->query('SELECT warehouse_id FROM purchase_orders WHERE 1 = 0');
+        } catch (PDOException $e) {
+            $pdo->exec('ALTER TABLE purchase_orders ADD COLUMN warehouse_id INTEGER');
+        }
     }
 
     $databaseDriver = strtolower($pdo->getAttribute(PDO::ATTR_DRIVER_NAME));
