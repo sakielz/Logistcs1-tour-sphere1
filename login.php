@@ -622,21 +622,6 @@ if (isset($_GET['timeout']) && $_GET['timeout'] === '1') {
         .btn-login.loading .spinner { display: block; }
         .btn-login.loading .btn-text { display: none; }
 
-        /* ── Footer info ─────────────────────────────── */
-        .login-footer {
-            margin-top: 28px;
-            text-align: center;
-        }
-        .credentials-hint {
-            background: rgba(0,194,255,0.08);
-            border: 1px solid rgba(0,194,255,0.18);
-            border-radius: 12px;
-            padding: 12px 16px;
-            font-size: 12px;
-            color: var(--text-muted);
-        }
-        .credentials-hint strong { color: rgba(200,235,255,0.85); }
-
         /* ── Responsive ──────────────────────────────── */
         @media (max-width: 500px) {
             .login-card { padding: 36px 24px 30px; border-radius: 20px; }

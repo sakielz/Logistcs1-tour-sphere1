@@ -226,12 +226,6 @@
         @keyframes spin { to { transform: rotate(360deg); } }
         .btn-login.loading .spinner { display: block; }
         .btn-login.loading .btn-text { display: none; }
-        .login-footer { margin-top: 28px; text-align: center; }
-        .credentials-hint {
-            background: rgba(0,194,255,0.08); border: 1px solid rgba(0,194,255,0.18);
-            border-radius: 12px; padding: 12px 16px; font-size: 12px; color: var(--text-muted);
-        }
-        .credentials-hint strong { color: rgba(200,235,255,0.85); }
         @media (max-width: 500px) {
             .login-card { padding: 36px 24px 30px; border-radius: 20px; }
             .brand-logo  { width: 88px; height: 88px; }
@@ -351,14 +345,6 @@
                 </span>
             </button>
         </form>
-
-        <!-- Footer hint -->
-        <div class="login-footer">
-            <div class="credentials-hint">
-                <i class="fas fa-shield-alt" style="color:rgba(0,194,255,.6);"></i>
-                &nbsp;Contact your administrator for access credentials.
-            </div>
-        </div>
 
     </div><!-- /.login-card -->
 </div><!-- /.page-wrapper -->
