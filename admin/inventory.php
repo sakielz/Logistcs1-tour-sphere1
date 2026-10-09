@@ -294,6 +294,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'adjust_stock') {
     }
 }
 
+// Consume Stock Directly
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'consume_stock') {
+    $id = isset($_POST['id']) ? (int)$_POST['id'] : 0;
+    $warehouse_id = isset($_POST['warehouse_id']) ? (int)$_POST['warehouse_id'] : 0;
+    $quantity = isset($_POST['quantity']) ? (int)$_POST['quantity'] : 0;
+    $purpose = isset($_POST['purpose']) ? trim($_POST['purpose']) : 'consumption';
+    $notes = isset($_POST['notes']) ? trim($_POST['notes']) : '';
+    $fullNotes = "Consumed: " . ucwords(str_replace('_', ' ', $purpose)) . ($notes !== '' ? " - " . $notes : "");
+
+    try {
+        if ($id < 1 || $warehouse_id < 1 || $quantity <= 0) {
+            throw new RuntimeException('Provide a valid product, warehouse, and positive quantity.');
+        }
+
+        $stmt = $pdo->prepare("SELECT id FROM warehouses WHERE id = ? AND is_archived = 0 AND status = 'active'");
+        $stmt->execute([$warehouse_id]);
+        if (!$stmt->fetchColumn()) {
+            throw new RuntimeException('Select an active warehouse.');
+        }
+
+        $pdo->beginTransaction();
+        $stmt = $pdo->prepare("SELECT p.product_name, COALESCE(wi.quantity, 0) AS current_stock FROM products p LEFT JOIN warehouse_inventory wi ON wi.product_id = p.id AND wi.warehouse_id = ? WHERE p.id = ?");
+        $stmt->execute([$warehouse_id, $id]);
+        $product = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$product) throw new RuntimeException('Product not found.');
+        
+        $current_stock = (int)$product['current_stock'];
+        if ($quantity > $current_stock) {
+            throw new RuntimeException("Cannot consume $quantity units. Warehouse on-hand balance is only $current_stock.");
+        }
+
+        // FIFO consumption of batches
+        validateAndConsumeInventoryBatches($pdo, $id, $warehouse_id, $quantity);
+
+        $new_stock = $current_stock - $quantity;
+        $stmt = $pdo->prepare("UPDATE warehouse_inventory SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND warehouse_id = ?");
+        $stmt->execute([$new_stock, $id, $warehouse_id]);
+
+        $stmt = $pdo->prepare("UPDATE products SET current_stock = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?) WHERE id = ?");
+        $stmt->execute([$id, $id]);
+
+        $stmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, warehouse_id, notes, reference_document, created_by) VALUES (?, 'issuance', ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$id, $quantity, $current_stock, $new_stock, $warehouse_id, $fullNotes, 'CONSUME-' . date('Ymd-His'), $_SESSION['user_id']]);
+
+        logAudit($_SESSION['user_id'], 'consume_stock', 'inventory', "Consumed $quantity units of {$product['product_name']} from warehouse #$warehouse_id ($fullNotes)");
+        $pdo->commit();
+        $_SESSION['success'] = "Successfully consumed $quantity units of {$product['product_name']}.";
+        header('Location: inventory.php');
+        exit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $error = "Error consuming stock: " . $e->getMessage();
+    }
+}
+
 // Get products
 $showArchived = isset($_GET['archived']) ? 1 : 0;
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
@@ -908,17 +963,23 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
         
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 18px;
             margin-bottom: 30px;
         }
         
         .stat-card {
             background: var(--card);
-            padding: 20px;
+            padding: 18px 20px;
             border-radius: 12px;
             border: 1px solid var(--border);
             transition: all 0.3s;
+            min-width: 0;
+            overflow: hidden;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
         }
         
         .stat-card:hover {
@@ -930,12 +991,19 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
             font-size: 13px;
             color: var(--secondary-text);
             font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         
         .stat-card .value {
-            font-size: 28px;
+            font-size: clamp(16px, 1.8vw, 24px);
             font-weight: 700;
-            margin-top: 5px;
+            margin-top: 6px;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+            line-height: 1.25;
+            max-width: 100%;
         }
         
         .search-bar {
@@ -1044,16 +1112,52 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
             display: flex;
             gap: 6px;
             flex-wrap: wrap;
+            align-items: center;
+        }
+        
+        .action-buttons .btn {
+            font-size: 12px;
+            padding: 5px 9px;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            white-space: nowrap;
         }
         
         .barcode-display {
             font-family: 'Courier New', monospace;
-            font-size: 13px;
-            letter-spacing: 2px;
-            background: var(--bg);
-            padding: 2px 10px;
-            border-radius: 4px;
+            font-size: 12px;
+            letter-spacing: 1px;
+            background: transparent;
+            padding: 0;
             display: inline-block;
+        }
+
+        .btn-barcode-qr {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 10px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            color: var(--text);
+            font-family: 'Poppins', sans-serif;
+            text-align: left;
+        }
+
+        .btn-barcode-qr:hover {
+            border-color: var(--primary);
+            background: rgba(47, 128, 237, 0.08);
+            color: var(--primary);
+            transform: translateY(-1px);
+        }
+
+        .btn-barcode-qr i {
+            color: var(--primary);
+            font-size: 14px;
         }
         
         .stock-indicator {
@@ -1421,7 +1525,25 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                                 </div>
                             </td>
                             <td>
-                                <span class="barcode-display"><?php echo htmlspecialchars($product['barcode']); ?></span>
+                                <?php 
+                                $productBarcodeData = [
+                                    'id' => (int)$product['id'],
+                                    'sku' => $product['sku'],
+                                    'product_name' => $product['product_name'],
+                                    'barcode' => !empty($product['barcode']) ? $product['barcode'] : $product['sku'],
+                                    'category' => $product['category'] ?? '',
+                                    'brand' => $product['brand'] ?? '',
+                                    'price' => number_format((float)$product['unit_price'], 2),
+                                    'stock' => (int)$product['current_stock'],
+                                    'unit' => $product['unit_measure'] ?? 'pcs'
+                                ];
+                                ?>
+                                <button type="button" class="btn-barcode-qr" 
+                                    onclick="openBarcodeModal(<?php echo htmlspecialchars(json_encode($productBarcodeData, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8'); ?>)"
+                                    title="Click to view &amp; scan Barcode / QR Code">
+                                    <i class="fas fa-qrcode"></i>
+                                    <span class="barcode-display"><?php echo htmlspecialchars($product['barcode'] ?: $product['sku']); ?></span>
+                                </button>
                             </td>
                             <td>
                                 <span class="role-badge"><?php echo htmlspecialchars($product['category'] ?? 'N/A'); ?></span>
@@ -1466,25 +1588,35 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                             <td>
                                 <div class="action-buttons">
                                     <?php if (!$showArchived): ?>
-                                        <button onclick="openStockAdjust(<?php echo (int)$product['id']; ?>, this)"
-                                            data-product-name="<?php echo htmlspecialchars($product['product_name'], ENT_QUOTES); ?>"
-                                            data-warehouse-stocks="<?php echo htmlspecialchars(json_encode($product['warehouse_stocks']), ENT_QUOTES); ?>"
-                                            class="btn btn-success btn-sm" title="Adjust Stock">
-                                        <i class="fas fa-edit"></i>
+                                    <button type="button" onclick="openConsumeModal(<?php echo (int)$product['id']; ?>, this)"
+                                        data-product-name="<?php echo htmlspecialchars($product['product_name'], ENT_QUOTES); ?>"
+                                        data-sku="<?php echo htmlspecialchars($product['sku'], ENT_QUOTES); ?>"
+                                        data-current-stock="<?php echo (int)$product['current_stock']; ?>"
+                                        data-warehouse-stocks="<?php echo htmlspecialchars(json_encode($product['warehouse_stocks']), ENT_QUOTES); ?>"
+                                        class="btn btn-danger btn-sm" title="Consume Stock">
+                                        <i class="fas fa-minus-circle"></i> Consume
                                     </button>
-                                    <a href="inventory.php?action=edit&id=<?php echo $product['id']; ?>" class="btn btn-primary btn-sm">
-                                        <i class="fas fa-pen"></i>
+                                    <button type="button" onclick="openStockAdjust(<?php echo (int)$product['id']; ?>, this)"
+                                        data-product-name="<?php echo htmlspecialchars($product['product_name'], ENT_QUOTES); ?>"
+                                        data-warehouse-stocks="<?php echo htmlspecialchars(json_encode($product['warehouse_stocks']), ENT_QUOTES); ?>"
+                                        class="btn btn-success btn-sm" title="Adjust Stock">
+                                        <i class="fas fa-sliders-h"></i> Adjust
+                                    </button>
+                                    <a href="inventory.php?action=edit&id=<?php echo $product['id']; ?>" class="btn btn-primary btn-sm" title="Edit Product">
+                                        <i class="fas fa-pen"></i> Edit
                                     </a>
                                     <a href="inventory.php?action=archive&id=<?php echo $product['id']; ?>" 
                                        class="btn btn-warning btn-sm" 
+                                       title="Archive Product"
                                        onclick="return confirm('Archive this product?');">
-                                        <i class="fas fa-archive"></i>
+                                        <i class="fas fa-archive"></i> Archive
                                     </a>
                                     <?php else: ?>
                                     <a href="inventory.php?action=restore&id=<?php echo $product['id']; ?>" 
                                        class="btn btn-success btn-sm"
+                                       title="Restore Product"
                                        onclick="return confirm('Restore this product?');">
-                                        <i class="fas fa-undo"></i>
+                                        <i class="fas fa-undo"></i> Restore
                                     </a>
                                     <?php endif; ?>
                                 </div>
@@ -1771,6 +1903,106 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
         </div>
     </div>
     <?php endif; ?>
+
+    <!-- Consume Stock Modal -->
+    <div id="consumeModal" class="modal-overlay" style="display: none;">
+        <div class="modal" style="max-width: 520px;">
+            <h3><i class="fas fa-boxes" style="color: #E67E22;"></i> Consume Stock</h3>
+            <p style="font-size: 13px; color: var(--secondary-text); margin-top: -8px; margin-bottom: 16px;">
+                Deduct units directly for operations, tour usage, or internal requisitions with FIFO batch tracking.
+            </p>
+            <form method="POST" action="inventory.php?action=consume_stock">
+                <input type="hidden" name="id" id="consumeProductId">
+                <div class="form-group">
+                    <label>Product</label>
+                    <p id="consumeProductName" style="font-weight: 600; font-size: 15px; margin: 0; color: var(--text);"></p>
+                    <small id="consumeProductSku" style="color: var(--secondary-text);"></small>
+                </div>
+                <div class="form-group">
+                    <label>From Warehouse *</label>
+                    <select name="warehouse_id" id="consumeWarehouseId" required>
+                        <?php foreach ($warehouses as $warehouse): ?>
+                        <option value="<?php echo (int)$warehouse['id']; ?>" <?php echo ((int)($selectedWarehouse['id'] ?? ($warehouses[0]['id'] ?? 0)) === (int)$warehouse['id']) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($warehouse['name'] . ' (' . $warehouse['warehouse_code'] . ')'); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <small id="consumeWarehouseAvailable" style="color: var(--primary); font-weight: 500; display: block; margin-top: 4px;"></small>
+                </div>
+                <div class="form-group">
+                    <label>Quantity to Consume *</label>
+                    <input type="number" name="quantity" id="consumeQuantity" required min="1" placeholder="Enter quantity">
+                </div>
+                <div class="form-group">
+                    <label>Purpose / Operation</label>
+                    <select name="purpose" id="consumePurpose">
+                        <option value="tour_operations">Tour Operations & Departures</option>
+                        <option value="internal_use">Internal & Office Usage</option>
+                        <option value="maintenance">Maintenance & Repairs</option>
+                        <option value="customer_service">Customer Service & Fulfillment</option>
+                        <option value="damaged_disposed">Damaged / Expired Disposal</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Notes / Requisition Reference</label>
+                    <textarea name="notes" rows="2" placeholder="Optional reference e.g., Tour #402, Trip Manila-Baguio"></textarea>
+                </div>
+                <div class="form-actions" style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+                    <button type="button" onclick="closeConsumeModal()" class="btn btn-outline">Cancel</button>
+                    <button type="submit" class="btn btn-warning" style="background:#E67E22; color:#fff; border-color:#E67E22;">
+                        <i class="fas fa-check-circle"></i> Confirm Consumption
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Barcode & QR Code Modal -->
+    <div id="barcodeModal" class="modal-overlay" style="display: none;">
+        <div class="modal" style="max-width: 480px; text-align: center;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <h3 style="margin: 0; font-size: 17px;"><i class="fas fa-qrcode" style="color: var(--primary);"></i> Product Barcode & QR Code</h3>
+                <button type="button" onclick="closeBarcodeModal()" style="border: none; background: transparent; font-size: 18px; color: var(--secondary-text); cursor: pointer;">&times;</button>
+            </div>
+            
+            <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px;">
+                <h4 id="qrModalProdName" style="margin: 0 0 4px; font-size: 16px; color: var(--text);"></h4>
+                <div style="display: flex; justify-content: center; gap: 12px; font-size: 12px; color: var(--secondary-text); margin-bottom: 14px;">
+                    <span id="qrModalSku" style="font-weight: 600; color: var(--primary);"></span>
+                    <span>•</span>
+                    <span id="qrModalCategory"></span>
+                    <span>•</span>
+                    <span id="qrModalPrice" style="font-weight: 600; color: #27AE60;"></span>
+                </div>
+
+                <!-- QR Code Box -->
+                <div style="background: #ffffff; display: inline-block; padding: 12px; border-radius: 10px; border: 1px solid #E5E7EB; box-shadow: 0 4px 10px rgba(0,0,0,0.05); margin-bottom: 12px;">
+                    <img id="qrModalImg" src="" alt="QR Code" style="width: 180px; height: 180px; display: block;">
+                </div>
+                <div style="font-size: 11px; color: var(--secondary-text); margin-bottom: 12px;">
+                    Scan with any mobile camera or PDA scanner to look up inventory data instantly.
+                </div>
+
+                <!-- 1D Barcode Box -->
+                <div style="background: #ffffff; padding: 10px; border-radius: 8px; border: 1px solid #E5E7EB;">
+                    <img id="barcodeModalImg" src="" alt="1D Barcode" style="max-width: 90%; height: 42px; display: block; margin: 0 auto;">
+                    <div id="barcodeModalCodeText" style="font-family: monospace; font-size: 13px; font-weight: 700; letter-spacing: 2px; color: #111827; margin-top: 4px;"></div>
+                </div>
+
+                <div style="display: flex; justify-content: space-between; font-size: 12px; margin-top: 12px; color: var(--secondary-text);">
+                    <span>Stock: <strong id="qrModalStock" style="color: var(--text);"></strong></span>
+                    <span>Verified Logistics System</span>
+                </div>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                <button type="button" onclick="closeBarcodeModal()" class="btn btn-outline">Close</button>
+                <button type="button" onclick="printBarcodeLabel()" class="btn btn-primary">
+                    <i class="fas fa-print"></i> Print Sticker Label
+                </button>
+            </div>
+        </div>
+    </div>
     
     <script>
         // ── Stock Adjust Modal ───────────────────────────────────────────────
@@ -1793,6 +2025,100 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
 
         function closeStockModal() {
             document.getElementById('stockModal').style.display = 'none';
+        }
+
+        // ── Consume Stock Modal ───────────────────────────────────────────────
+        var currentConsumeWarehouseStocks = {};
+        function openConsumeModal(id, button) {
+            currentConsumeWarehouseStocks = JSON.parse(button.dataset.warehouseStocks || '{}');
+            document.getElementById('consumeProductId').value = id;
+            document.getElementById('consumeProductName').textContent = button.dataset.productName;
+            document.getElementById('consumeProductSku').textContent = 'SKU: ' + button.dataset.sku + ' • Total Stock: ' + button.dataset.currentStock;
+            
+            var warehouseSelect = document.getElementById('consumeWarehouseId');
+            var availableText = document.getElementById('consumeWarehouseAvailable');
+            var quantityInput = document.getElementById('consumeQuantity');
+
+            function updateConsumeWarehouse() {
+                var selectedWhId = warehouseSelect.value;
+                var stock = Number(currentConsumeWarehouseStocks[selectedWhId] || 0);
+                availableText.textContent = 'Available in selected warehouse: ' + stock.toLocaleString() + ' units';
+                quantityInput.max = stock > 0 ? stock : 0;
+            }
+
+            warehouseSelect.onchange = updateConsumeWarehouse;
+            updateConsumeWarehouse();
+            document.getElementById('consumeModal').style.display = 'flex';
+        }
+
+        function closeConsumeModal() {
+            document.getElementById('consumeModal').style.display = 'none';
+        }
+
+        // ── Barcode & QR Code Modal ──────────────────────────────────────────
+        var activeProductLabelData = null;
+        function openBarcodeModal(data) {
+            activeProductLabelData = data;
+            document.getElementById('qrModalProdName').textContent = data.product_name;
+            document.getElementById('qrModalSku').textContent = 'SKU: ' + data.sku;
+            document.getElementById('qrModalPrice').textContent = '₱' + data.price;
+            document.getElementById('qrModalStock').textContent = Number(data.stock).toLocaleString() + ' ' + (data.unit || 'pcs');
+            document.getElementById('qrModalCategory').textContent = data.category || 'General';
+            document.getElementById('barcodeModalCodeText').textContent = data.barcode;
+
+            // Generate clean QR Server payload
+            var qrPayload = encodeURIComponent('GLOBALSCM|PROD|' + data.sku + '|BC:' + data.barcode + '|PHP' + data.price);
+            document.getElementById('qrModalImg').src = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + qrPayload;
+
+            // Generate standard Code128 1D Barcode image
+            document.getElementById('barcodeModalImg').src = 'https://bwipjs-api.metafloor.com/?bcid=code128&text=' + encodeURIComponent(data.barcode) + '&scale=2&height=10&includetext=0';
+
+            document.getElementById('barcodeModal').style.display = 'flex';
+        }
+
+        function closeBarcodeModal() {
+            document.getElementById('barcodeModal').style.display = 'none';
+        }
+
+        function printBarcodeLabel() {
+            if (!activeProductLabelData) return;
+            var d = activeProductLabelData;
+            var qrSrc = document.getElementById('qrModalImg').src;
+            var bcSrc = document.getElementById('barcodeModalImg').src;
+
+            var printWin = window.open('', '_blank', 'width=500,height=600');
+            if (!printWin) {
+                alert('Please allow popups to print barcode sticker label.');
+                return;
+            }
+
+            printWin.document.write(
+                '<!DOCTYPE html><html><head><title>Product Label - ' + d.sku + '</title>' +
+                '<style>' +
+                'body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #f4f4f4; }' +
+                '.label-sticker { width: 340px; padding: 20px; border: 2px dashed #333; background: #fff; border-radius: 10px; text-align: center; box-sizing: border-box; }' +
+                '.brand-header { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #666; font-weight: 700; margin-bottom: 6px; }' +
+                '.prod-name { font-size: 16px; font-weight: 700; margin: 0 0 4px; color: #111; }' +
+                '.prod-sku { font-size: 12px; font-family: monospace; color: #2F80ED; font-weight: 700; margin-bottom: 12px; }' +
+                '.qr-wrap { display: inline-block; padding: 8px; background: #fff; border: 1px solid #eee; border-radius: 8px; margin-bottom: 10px; }' +
+                '.qr-wrap img { width: 140px; height: 140px; display: block; }' +
+                '.bc-wrap img { width: 90%; height: 45px; display: block; margin: 0 auto; }' +
+                '.bc-text { font-family: monospace; font-size: 12px; font-weight: 700; letter-spacing: 2px; margin-top: 3px; color: #222; }' +
+                '.meta-row { display: flex; justify-content: space-between; border-top: 1px solid #eee; padding-top: 10px; margin-top: 10px; font-size: 11px; color: #555; }' +
+                '@media print { body { background: #fff; padding: 0; } .label-sticker { border: 1px solid #000; } }' +
+                '</style></head><body>' +
+                '<div class="label-sticker">' +
+                '  <div class="brand-header">GlobalSCM Logistics Product Label</div>' +
+                '  <div class="prod-name">' + d.product_name + '</div>' +
+                '  <div class="prod-sku">' + d.sku + '</div>' +
+                '  <div class="qr-wrap"><img src="' + qrSrc + '" alt="QR Code"></div>' +
+                '  <div class="bc-wrap"><img src="' + bcSrc + '" alt="Barcode"><div class="bc-text">' + d.barcode + '</div></div>' +
+                '  <div class="meta-row"><span>Unit Price: ₱' + d.price + '</span><span>Stock: ' + d.stock + ' ' + (d.unit || 'pcs') + '</span></div>' +
+                '</div>' +
+                '<script>window.onload = function(){ window.print(); };<\/script>' +
+                '</body></html>'
+            );
+            printWin.document.close();
         }
 
         // ── SKU Auto-Generate ────────────────────────────────────────────────

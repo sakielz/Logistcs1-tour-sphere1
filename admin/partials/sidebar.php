@@ -234,6 +234,19 @@ $currentPage = basename($_SERVER['PHP_SELF']);
                 } catch (Exception $e) {}
                 ?>
             </a>
+            
+            <a href="bidding.php" class="nav-item <?php echo $currentPage === 'bidding.php' ? 'active' : ''; ?>">
+                <i class="fas fa-gavel"></i> Freight Bidding
+                <?php
+                try {
+                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM bidding_tenders WHERE status IN ('open', 'under_evaluation') AND is_archived = 0");
+                    $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
+                    if ($count > 0): ?>
+                    <span class="badge" style="background: #2563EB;"><?php echo $count; ?></span>
+                    <?php endif;
+                } catch (Exception $e) {}
+                ?>
+            </a>
         </div>
     </div>
     <?php endif; ?>
@@ -324,11 +337,13 @@ $currentPage = basename($_SERVER['PHP_SELF']);
                     <?php endif;
                 } catch (Exception $e) {}
                 ?>
-            </a>
             <a href="settings.php" class="nav-item <?php echo $currentPage === 'settings.php' ? 'active' : ''; ?>">
                 <i class="fas fa-cog"></i> Settings
             </a>
             <?php endif; ?>
+            <a href="security.php" class="nav-item <?php echo $currentPage === 'security.php' ? 'active' : ''; ?>">
+                <i class="fas fa-shield-alt"></i> Account Security & 2FA
+            </a>
             <a href="../logout.php" class="nav-item" onclick="return confirm('Are you sure you want to logout?');">
                 <i class="fas fa-sign-out-alt"></i> Logout
             </a>

@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // admin/requisitions.php
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
@@ -154,10 +154,12 @@ if ($action === 'bulk_approve' && isset($_POST['ids'])) {
                 
                 if ($pr) {
                     $po_number = 'PO-' . date('Ymd') . '-' . str_pad(mt_rand(1, 999), 3, '0', STR_PAD_LEFT);
+                    $nowDate = date('Y-m-d H:i:s');
+                    $expDeliveryDate = date('Y-m-d H:i:s', strtotime('+14 days'));
                     
                     $stmt2 = $pdo->prepare("INSERT INTO purchase_orders (po_number, payment_method, order_date, expected_delivery, status, approval_status, created_by)
-                                            VALUES (?, ?, datetime('now'), datetime('now', '+14 days'), 'approved', 'approved', ?)");
-                    $stmt2->execute([$po_number, $pr['payment_method'] ?? null, $_SESSION['user_id']]);
+                                            VALUES (?, ?, ?, ?, 'approved', 'approved', ?)");
+                    $stmt2->execute([$po_number, $pr['payment_method'] ?? null, $nowDate, $expDeliveryDate, $_SESSION['user_id']]);
                     $po_id = $pdo->lastInsertId();
                     
                     // Copy items
@@ -282,10 +284,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'update_status') {
             
             if ($pr) {
                 $po_number = 'PO-' . date('Ymd') . '-' . str_pad(mt_rand(1, 999), 3, '0', STR_PAD_LEFT);
+                $nowDate = date('Y-m-d H:i:s');
+                $expDeliveryDate = date('Y-m-d H:i:s', strtotime('+14 days'));
                 
                 $stmt2 = $pdo->prepare("INSERT INTO purchase_orders (po_number, payment_method, order_date, expected_delivery, status, approval_status, created_by)
-                                        VALUES (?, ?, datetime('now'), datetime('now', '+14 days'), 'approved', 'approved', ?)");
-                $stmt2->execute([$po_number, $pr['payment_method'] ?? null, $_SESSION['user_id']]);
+                                        VALUES (?, ?, ?, ?, 'approved', 'approved', ?)");
+                $stmt2->execute([$po_number, $pr['payment_method'] ?? null, $nowDate, $expDeliveryDate, $_SESSION['user_id']]);
                 $po_id = $pdo->lastInsertId();
                 
                 // Copy items
@@ -389,10 +393,12 @@ if ($action === 'convert_to_po' && isset($_GET['id'])) {
         
         if ($pr) {
             $po_number = 'PO-' . date('Ymd') . '-' . str_pad(mt_rand(1, 999), 3, '0', STR_PAD_LEFT);
+            $nowDate = date('Y-m-d H:i:s');
+            $expDeliveryDate = date('Y-m-d H:i:s', strtotime('+14 days'));
             
             $stmt2 = $pdo->prepare("INSERT INTO purchase_orders (po_number, payment_method, order_date, expected_delivery, status, approval_status, created_by)
-                                    VALUES (?, ?, datetime('now'), datetime('now', '+14 days'), 'approved', 'approved', ?)");
-            $stmt2->execute([$po_number, $pr['payment_method'] ?? null, $_SESSION['user_id']]);
+                                    VALUES (?, ?, ?, ?, 'approved', 'approved', ?)");
+            $stmt2->execute([$po_number, $pr['payment_method'] ?? null, $nowDate, $expDeliveryDate, $_SESSION['user_id']]);
             $po_id = $pdo->lastInsertId();
             
             // Copy items

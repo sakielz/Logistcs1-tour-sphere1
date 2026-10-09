@@ -1,9 +1,9 @@
-﻿<?php
+<?php
 // admin/users.php
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
 
-requireAuth('admin');
+requireAuth(['admin', 'super_admin']);
 
 // Define color constants if not already defined
 if (!defined('COLOR_PRIMARY')) define('COLOR_PRIMARY', '#2F80ED');
@@ -33,11 +33,11 @@ $action = isset($_GET['action']) ? $_GET['action'] : 'list';
 // definition in Supabase.
 // ============================================
 $VALID_ROLES = [
-    'employer' => 'Employer',
-    'warehouse_manager' => 'Warehouse Manager',
-    'procurement_officer' => 'Procurement Officer',
-    'inventory_clerk' => 'Inventory Clerk',
+    'super_admin' => 'Super Admin',
     'admin' => 'Admin',
+    'procurement_officer' => 'Procurement Officer (Can Input Suppliers)',
+    'warehouse_manager' => 'Warehouse Manager',
+    'inventory_clerk' => 'Inventory Clerk',
 ];
 
 // Create User
@@ -46,32 +46,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $email = isset($_POST['email']) ? trim($_POST['email']) : '';
     $password = isset($_POST['password']) ? $_POST['password'] : '';
     $full_name = isset($_POST['full_name']) ? trim($_POST['full_name']) : '';
-    $role = isset($_POST['role']) ? $_POST['role'] : 'employer';
+    $role = isset($_POST['role']) ? $_POST['role'] : 'inventory_clerk';
     if (!array_key_exists($role, $VALID_ROLES)) {
-        $role = 'employer';
+        $role = 'inventory_clerk';
     }
     
     $errors = [];
     
     if (empty($username)) $errors[] = 'Username is required';
     if (empty($email)) $errors[] = 'Email is required';
-    if (empty($password)) $errors[] = 'Password is required';
     if (empty($full_name)) $errors[] = 'Full name is required';
+
+    // Strong Password Validation: min 8 chars, uppercase, lowercase, number, special character
+    if (empty($password)) {
+        $errors[] = 'Password is required';
+    } else {
+        if (strlen($password) < 8) {
+            $errors[] = 'Password must be at least 8 characters long';
+        }
+        if (!preg_match('/[A-Z]/', $password)) {
+            $errors[] = 'Password must contain at least one uppercase letter (A-Z)';
+        }
+        if (!preg_match('/[a-z]/', $password)) {
+            $errors[] = 'Password must contain at least one lowercase letter (a-z)';
+        }
+        if (!preg_match('/[0-9]/', $password)) {
+            $errors[] = 'Password must contain at least one number (0-9)';
+        }
+        if (!preg_match('/[^A-Za-z0-9]/', $password)) {
+            $errors[] = 'Password must contain at least one special character (!@#$%^&*()-_+= etc.)';
+        }
+    }
     
     if (empty($errors)) {
         try {
             $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
             $stmt = $pdo->prepare("INSERT INTO users (username, email, password, full_name, role, is_active, is_archived) VALUES (?, ?, ?, ?, ?, TRUE, FALSE)");
             $stmt->execute([$username, $email, $hashedPassword, $full_name, $role]);
-            logAudit($_SESSION['user_id'], 'create_user', 'user_management', "Created user: $username");
+            logAudit($_SESSION['user_id'], 'create_user', 'user_management', "Created user: $username ($role)");
             $_SESSION['success'] = "User created successfully!";
             header('Location: users.php');
             exit();
         } catch (PDOException $e) {
-            // Include the SQLSTATE code - if this is a role/enum mismatch
-            // at the database level, the code (e.g. 22P02 for an invalid
-            // Postgres enum input, 23514 for a failed CHECK constraint)
-            // will point straight at it.
             $error = "Error creating user: " . $e->getMessage() . " (SQLSTATE " . $e->getCode() . ")";
         }
     } else {
@@ -85,9 +101,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'edit') {
     $username = isset($_POST['username']) ? trim($_POST['username']) : '';
     $email = isset($_POST['email']) ? trim($_POST['email']) : '';
     $full_name = isset($_POST['full_name']) ? trim($_POST['full_name']) : '';
-    $role = isset($_POST['role']) ? $_POST['role'] : 'employer';
+    $role = isset($_POST['role']) ? $_POST['role'] : 'inventory_clerk';
     if (!array_key_exists($role, $VALID_ROLES)) {
-        $role = 'employer';
+        $role = 'inventory_clerk';
     }
     $is_active = isset($_POST['is_active']) ? 1 : 0;
     
@@ -1333,9 +1349,35 @@ try {
                 
                 <?php if (!$editUser): ?>
                 <div class="form-group">
-                    <label>Password *</label>
-                    <input type="password" name="password" required placeholder="Enter password (min 8 characters)">
+                    <label>Password * <span style="font-size:11px;color:var(--secondary-text);font-weight:400;">(Min 8 chars, uppercase, lowercase, number, special char)</span></label>
+                    <input type="password" name="password" id="userPasswordInput" required 
+                           pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{8,}"
+                           placeholder="e.g. Strong@2026Pass"
+                           title="Must contain at least 8 characters, including uppercase, lowercase, number, and special character">
+                    <div style="margin-top:6px;font-size:12px;display:grid;grid-template-columns:1fr 1fr;gap:4px;color:var(--secondary-text);">
+                        <span id="pwReqLen"><i class="fas fa-circle-notch"></i> 8+ Characters</span>
+                        <span id="pwReqUpper"><i class="fas fa-circle-notch"></i> Uppercase (A-Z)</span>
+                        <span id="pwReqLower"><i class="fas fa-circle-notch"></i> Lowercase (a-z)</span>
+                        <span id="pwReqNum"><i class="fas fa-circle-notch"></i> Number (0-9)</span>
+                        <span id="pwReqSpecial" style="grid-column: span 2;"><i class="fas fa-circle-notch"></i> Special Character (!@#$%^&*)</span>
+                    </div>
                 </div>
+                <script>
+                document.getElementById('userPasswordInput')?.addEventListener('input', function() {
+                    var v = this.value;
+                    function setReq(id, valid) {
+                        var el = document.getElementById(id);
+                        if (!el) return;
+                        el.style.color = valid ? '#10B981' : '#EF4444';
+                        el.querySelector('i').className = valid ? 'fas fa-check-circle' : 'fas fa-times-circle';
+                    }
+                    setReq('pwReqLen', v.length >= 8);
+                    setReq('pwReqUpper', /[A-Z]/.test(v));
+                    setReq('pwReqLower', /[a-z]/.test(v));
+                    setReq('pwReqNum', /[0-9]/.test(v));
+                    setReq('pwReqSpecial', /[^A-Za-z0-9]/.test(v));
+                });
+                </script>
                 <?php endif; ?>
                 
                 <div class="form-group">

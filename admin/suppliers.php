@@ -3,7 +3,7 @@
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
 
-requireAuth(['admin', 'procurement_officer']);
+requireAuth(['admin', 'super_admin', 'procurement_officer']);
 
 // Define color constants if not already defined
 if (!defined('COLOR_PRIMARY'))
@@ -2230,7 +2230,7 @@ $recommendedCount = count(array_filter($allActiveSuppliers, function ($s) {
                     <?php endif; ?>
 
                     <div class="form-actions">
-                        <button type="button" onclick="closeModal()" class="btn btn-outline">Cancel</button>
+                        <a href="suppliers.php" onclick="closeModal(); return false;" class="btn btn-outline">Cancel</a>
                         <button type="submit" class="btn btn-primary">
                             <i class="fas fa-save"></i> <?php echo $editSupplier ? 'Update' : 'Create'; ?>
                         </button>
@@ -2288,10 +2288,8 @@ $recommendedCount = count(array_filter($allActiveSuppliers, function ($s) {
             var modal = document.getElementById('createModal');
             if (modal) {
                 modal.style.display = 'none';
-                var url = new URL(window.location.href);
-                url.searchParams.delete('action');
-                window.history.replaceState({}, '', url.toString());
             }
+            window.location.href = 'suppliers.php';
         }
 
         // Close modal on background click
@@ -2405,11 +2403,12 @@ $recommendedCount = count(array_filter($allActiveSuppliers, function ($s) {
                     overlay.classList.remove('active');
                 });
             }
+        });
 
-            // ============================================
-            // LIVE SUPPLIER SEARCH & RECOMMENDATIONS
-            // ============================================
-            document.addEventListener('DOMContentLoaded', function () {
+        // ============================================
+        // LIVE SUPPLIER SEARCH & RECOMMENDATIONS
+        // ============================================
+        document.addEventListener('DOMContentLoaded', function () {
                 var searchInput = document.getElementById('supplierSearchInput');
                 var recDropdown = document.getElementById('supplierRecommendations');
                 var form = document.getElementById('supplierFilterForm');

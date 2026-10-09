@@ -1899,7 +1899,7 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                 </div>
                 
                 <div class="form-actions">
-                    <button type="button" onclick="closeModal()" class="btn btn-outline">Cancel</button>
+                    <a href="purchase-orders.php" onclick="closeModal(); return false;" class="btn btn-outline">Cancel</a>
                     <button type="submit" class="btn btn-primary">
                         <i class="fas fa-save"></i> Create PO
                     </button>
@@ -2133,6 +2133,14 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
         
         function closeStatusModal() {
             document.getElementById('statusModal').style.display = 'none';
+        }
+
+        function closeModal() {
+            var modal = document.getElementById('createModal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+            window.location.href = 'purchase-orders.php';
         }
         
         // ============================================

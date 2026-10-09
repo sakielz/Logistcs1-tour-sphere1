@@ -8,6 +8,25 @@
     # RewriteCond %{HTTPS} off
     # RewriteRule ^(.*)$ https://%{HTTP_HOST}/$1 [R=301,L]
     
+    # Health check endpoint for HostForge / Docker
+    RewriteRule ^up/?$ up.php [L]
+    
+    # Explicit clean page routes
+    RewriteRule ^login/?$ login.php [L]
+    RewriteRule ^logout/?$ logout.php [L]
+    RewriteRule ^register/?$ register.php [L]
+    RewriteRule ^forgot-password/?$ forgot-password.php [L]
+    RewriteRule ^admin/?$ admin/dashboard.php [L]
+    
+    # Automatic .php extension for extensionless URLs
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_FILENAME}\.php -f
+    RewriteRule ^([^/]+)/?$ $1.php [L]
+    
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_FILENAME}\.php -f
+    RewriteRule ^admin/([^/]+)/?$ admin/$1.php [L]
+    
     # Redirect to login if not logged in
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteCond %{REQUEST_FILENAME} !-d

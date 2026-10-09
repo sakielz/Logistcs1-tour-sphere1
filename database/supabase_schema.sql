@@ -517,6 +517,60 @@ CREATE TABLE IF NOT EXISTS failed_jobs (
 );
 
 -- ==============================================================================
+-- 9b. Logistics Freight Bidding & Tenders Module
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS bidding_tenders (
+    id BIGSERIAL PRIMARY KEY,
+    tender_code VARCHAR(100) UNIQUE NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    tender_type VARCHAR(50) NOT NULL DEFAULT 'spot_auction',
+    transport_mode VARCHAR(50) NOT NULL DEFAULT 'road',
+    origin VARCHAR(255) NOT NULL,
+    destination VARCHAR(255) NOT NULL,
+    cargo_type VARCHAR(100) DEFAULT 'standard_dry',
+    estimated_volume VARCHAR(100),
+    target_rate NUMERIC(15, 2) DEFAULT 0.00,
+    currency VARCHAR(10) DEFAULT 'PHP',
+    deadline TIMESTAMPTZ,
+    service_level_req TEXT,
+    status VARCHAR(50) DEFAULT 'open',
+    awarded_bid_id BIGINT,
+    awarded_carrier_id BIGINT,
+    awarded_carrier_name VARCHAR(255),
+    awarded_rate NUMERIC(15, 2),
+    tms_shipment_id BIGINT,
+    contract_id BIGINT,
+    rate_sheet_specs TEXT,
+    notes TEXT,
+    is_archived BOOLEAN DEFAULT FALSE,
+    created_by BIGINT,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS bidding_bids (
+    id BIGSERIAL PRIMARY KEY,
+    tender_id BIGINT NOT NULL REFERENCES bidding_tenders(id) ON DELETE CASCADE,
+    carrier_id BIGINT,
+    carrier_name VARCHAR(255) NOT NULL,
+    bid_amount NUMERIC(15, 2) NOT NULL,
+    currency VARCHAR(10) DEFAULT 'PHP',
+    transit_time_days INTEGER DEFAULT 1,
+    carrier_score NUMERIC(5, 2) DEFAULT 85.0,
+    cost_score NUMERIC(5, 2) DEFAULT 0.0,
+    composite_score NUMERIC(5, 2) DEFAULT 0.0,
+    service_level TEXT,
+    notes TEXT,
+    status VARCHAR(50) DEFAULT 'submitted',
+    submitted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_bidding_tenders_code ON bidding_tenders(tender_code);
+CREATE INDEX IF NOT EXISTS idx_bidding_tenders_status ON bidding_tenders(status);
+CREATE INDEX IF NOT EXISTS idx_bidding_bids_tender ON bidding_bids(tender_id);
+
+-- ==============================================================================
 -- 10. Default Seed Data
 -- ==============================================================================
 
@@ -549,3 +603,78 @@ VALUES
     ('show_purchase_orders', 'true', 'ui', 'Show/hide purchase orders module'),
     ('show_logistics', 'true', 'ui', 'Show/hide logistics module')
 ON CONFLICT (setting_key) DO NOTHING;
+
+-- ==============================================================================
+-- 11. Cross-Database Compatibility Operators (Boolean <-> Integer)
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.bool_eq_int(b boolean, i integer) RETURNS boolean AS $$
+    SELECT b = (i <> 0);
+$$ LANGUAGE SQL IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION public.int_eq_bool(i integer, b boolean) RETURNS boolean AS $$
+    SELECT (i <> 0) = b;
+$$ LANGUAGE SQL IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION public.bool_neq_int(b boolean, i integer) RETURNS boolean AS $$
+    SELECT b <> (i <> 0);
+$$ LANGUAGE SQL IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION public.int_neq_bool(i integer, b boolean) RETURNS boolean AS $$
+    SELECT (i <> 0) <> b;
+$$ LANGUAGE SQL IMMUTABLE;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_operator o
+        JOIN pg_namespace n ON o.oprnamespace = n.oid
+        WHERE oprname = '=' AND oprleft = 'boolean'::regtype AND oprright = 'integer'::regtype
+    ) THEN
+        CREATE OPERATOR public.= (
+            LEFTARG = boolean,
+            RIGHTARG = integer,
+            PROCEDURE = public.bool_eq_int,
+            COMMUTATOR = =
+        );
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_operator o
+        JOIN pg_namespace n ON o.oprnamespace = n.oid
+        WHERE oprname = '=' AND oprleft = 'integer'::regtype AND oprright = 'boolean'::regtype
+    ) THEN
+        CREATE OPERATOR public.= (
+            LEFTARG = integer,
+            RIGHTARG = boolean,
+            PROCEDURE = public.int_eq_bool,
+            COMMUTATOR = =
+        );
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_operator o
+        JOIN pg_namespace n ON o.oprnamespace = n.oid
+        WHERE oprname = '<>' AND oprleft = 'boolean'::regtype AND oprright = 'integer'::regtype
+    ) THEN
+        CREATE OPERATOR public.<> (
+            LEFTARG = boolean,
+            RIGHTARG = integer,
+            PROCEDURE = public.bool_neq_int,
+            COMMUTATOR = <>
+        );
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_operator o
+        JOIN pg_namespace n ON o.oprnamespace = n.oid
+        WHERE oprname = '<>' AND oprleft = 'integer'::regtype AND oprright = 'boolean'::regtype
+    ) THEN
+        CREATE OPERATOR public.<> (
+            LEFTARG = integer,
+            RIGHTARG = boolean,
+            PROCEDURE = public.int_neq_bool,
+            COMMUTATOR = <>
+        );
+    END IF;
+END $$;
+

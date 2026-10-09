@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // admin/dashboard.php
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
@@ -1245,6 +1245,11 @@ try {
                             </a>
                         </div>
                     </div>
+
+                    <!-- AI Daily Narrative Button -->
+                    <button type="button" class="btn btn-primary" onclick="openAiNarrativeModal()" style="background: linear-gradient(135deg, #2563EB, #7C3AED); border:none; box-shadow: 0 4px 12px rgba(37,99,235,0.25);">
+                        <i class="fas fa-robot"></i> AI Daily Narrative
+                    </button>
                     
                     <a href="logout.php" class="btn btn-outline">
                         <i class="fas fa-sign-out-alt"></i> Logout
@@ -1635,6 +1640,243 @@ try {
                 }
             });
         });
+
+        // ============================================
+        // AI DAILY NARRATIVE REPORT MODAL & LOGIC
+        // ============================================
+        var currentNarrativeMarkdown = '';
+
+        function openAiNarrativeModal() {
+            var modal = document.getElementById('aiNarrativeModal');
+            if (modal) {
+                modal.style.display = 'flex';
+                loadAiNarrative();
+            }
+        }
+
+        function closeAiNarrativeModal() {
+            var modal = document.getElementById('aiNarrativeModal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        function loadAiNarrative() {
+            var dateVal = document.getElementById('aiReportDate').value || '<?php echo date("Y-m-d"); ?>';
+            var loadingEl = document.getElementById('aiNarrativeLoading');
+            var container = document.getElementById('aiNarrativeContainer');
+
+            loadingEl.style.display = 'block';
+            container.style.display = 'none';
+
+            fetch('../api/report.php?action=narrative&date=' + encodeURIComponent(dateVal))
+                .then(function(res) {
+                    if (!res.ok) throw new Error('Failed to generate report');
+                    return res.json();
+                })
+                .then(function(data) {
+                    loadingEl.style.display = 'none';
+                    container.style.display = 'block';
+
+                    if (!data.success || !data.report) {
+                        container.innerHTML = '<div style="color:#DC2626; padding:20px; text-align:center;">Failed to generate AI report: ' + (data.error || 'Unknown error') + '</div>';
+                        return;
+                    }
+
+                    var rep = data.report;
+                    currentNarrativeMarkdown = rep.full_markdown || rep.executive_summary;
+
+                    var html = '';
+                    
+                    // Header Card
+                    html += '<div style="background:var(--bg); border:1px solid var(--border); border-radius:12px; padding:18px; margin-bottom:20px;">';
+                    html += '  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">';
+                    html += '    <div>';
+                    html += '      <h3 style="margin:0; font-size:18px; color:var(--text);">' + rep.formatted_date + '</h3>';
+                    html += '      <small style="color:var(--secondary-text);">Synthesized at ' + rep.generated_at + '</small>';
+                    html += '    </div>';
+                    html += '    <span style="background:rgba(37,99,235,0.12); color:#2563EB; padding:4px 12px; border-radius:16px; font-size:12px; font-weight:600;"><i class="fas fa-check-circle"></i> AI Certified Briefing</span>';
+                    html += '  </div>';
+                    html += '</div>';
+
+                    // Sections
+                    var sec = rep.sections;
+                    if (sec) {
+                        // Executive Overview
+                        if (sec.executive) {
+                            html += '<div style="background:var(--card); border:1px solid var(--border); border-left:4px solid #2563EB; border-radius:10px; padding:18px; margin-bottom:16px;">';
+                            html += '  <h4 style="margin:0 0 8px; color:#2563EB; font-size:15px;"><i class="' + sec.executive.icon + '"></i> ' + sec.executive.title + '</h4>';
+                            html += '  <p style="margin:0; font-size:13px; line-height:1.7; color:var(--text);">' + sec.executive.content + '</p>';
+                            html += '</div>';
+                        }
+
+                        // Warehouse & Procurement 2-column grid
+                        html += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px;">';
+                        if (sec.warehouse) {
+                            html += '  <div style="background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:16px;">';
+                            html += '    <h4 style="margin:0 0 8px; color:var(--text); font-size:14px;"><i class="' + sec.warehouse.icon + '" style="color:#D97706;"></i> ' + sec.warehouse.title + '</h4>';
+                            html += '    <p style="margin:0 0 10px; font-size:12px; line-height:1.6; color:var(--text);">' + sec.warehouse.content + '</p>';
+                            if (sec.warehouse.metrics) {
+                                html += '    <div style="display:flex; gap:12px; font-size:11px; color:var(--secondary-text); border-top:1px solid var(--border); padding-top:8px;">';
+                                html += '      <span>Inbound: <strong>+' + Number(sec.warehouse.metrics.received).toLocaleString() + '</strong></span>';
+                                html += '      <span>Outbound: <strong>-' + Number(sec.warehouse.metrics.issued).toLocaleString() + '</strong></span>';
+                                html += '    </div>';
+                            }
+                            html += '  </div>';
+                        }
+                        if (sec.procurement) {
+                            html += '  <div style="background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:16px;">';
+                            html += '    <h4 style="margin:0 0 8px; color:var(--text); font-size:14px;"><i class="' + sec.procurement.icon + '" style="color:#059669;"></i> ' + sec.procurement.title + '</h4>';
+                            html += '    <p style="margin:0 0 10px; font-size:12px; line-height:1.6; color:var(--text);">' + sec.procurement.content + '</p>';
+                            if (sec.procurement.metrics) {
+                                html += '    <div style="display:flex; gap:12px; font-size:11px; color:var(--secondary-text); border-top:1px solid var(--border); padding-top:8px;">';
+                                html += '      <span>POs: <strong>' + sec.procurement.metrics.po_count + '</strong></span>';
+                                html += '      <span>Spend: <strong>₱' + Number(sec.procurement.metrics.total_spend).toLocaleString(undefined, {minimumFractionDigits:2}) + '</strong></span>';
+                                html += '    </div>';
+                            }
+                            html += '  </div>';
+                        }
+                        html += '</div>';
+
+                        // Logistics
+                        if (sec.logistics) {
+                            html += '<div style="background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px;">';
+                            html += '  <h4 style="margin:0 0 8px; color:var(--text); font-size:14px;"><i class="' + sec.logistics.icon + '" style="color:#2563EB;"></i> ' + sec.logistics.title + '</h4>';
+                            html += '  <p style="margin:0; font-size:12px; line-height:1.6; color:var(--text);">' + sec.logistics.content + '</p>';
+                            html += '</div>';
+                        }
+
+                        // Risk Watchlist
+                        if (sec.risk) {
+                            var isCriticalRisk = sec.risk.metrics && sec.risk.metrics.out_of_stock > 0;
+                            html += '<div style="background:' + (isCriticalRisk ? 'rgba(220,38,38,0.06)' : 'var(--bg)') + '; border:1px solid ' + (isCriticalRisk ? '#FECACA' : 'var(--border)') + '; border-radius:10px; padding:16px; margin-bottom:16px;">';
+                            html += '  <h4 style="margin:0 0 8px; color:' + (isCriticalRisk ? '#DC2626' : 'var(--text)') + '; font-size:14px;"><i class="' + sec.risk.icon + '"></i> ' + sec.risk.title + '</h4>';
+                            html += '  <p style="margin:0; font-size:12px; line-height:1.6; color:var(--text);">' + sec.risk.content + '</p>';
+                            html += '</div>';
+                        }
+
+                        // Directives
+                        if (sec.directives && sec.directives.items && sec.directives.items.length > 0) {
+                            html += '<div style="background:var(--card); border:1px solid var(--border); border-radius:10px; padding:18px;">';
+                            html += '  <h4 style="margin:0 0 10px; color:var(--text); font-size:14px;"><i class="' + sec.directives.icon + '" style="color:#7C3AED;"></i> ' + sec.directives.title + '</h4>';
+                            html += '  <ul style="margin:0; padding-left:20px; font-size:13px; line-height:1.7; color:var(--text);">';
+                            sec.directives.items.forEach(function(item) {
+                                html += '    <li style="margin-bottom:6px;">' + item + '</li>';
+                            });
+                            html += '  </ul>';
+                            html += '</div>';
+                        }
+                    }
+
+                    container.innerHTML = html;
+                })
+                .catch(function(err) {
+                    loadingEl.style.display = 'none';
+                    container.style.display = 'block';
+                    container.innerHTML = '<div style="color:#DC2626; padding:20px; text-align:center;">Failed to connect to AI report service: ' + err.message + '</div>';
+                });
+        }
+
+        function copyNarrativeText() {
+            if (!currentNarrativeMarkdown) {
+                alert('No narrative report loaded yet.');
+                return;
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(currentNarrativeMarkdown).then(function() {
+                    var btn = document.getElementById('btnCopyNarrative');
+                    if (btn) {
+                        btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                        setTimeout(function() {
+                            btn.innerHTML = '<i class="fas fa-copy"></i> Copy Narrative';
+                        }, 2000);
+                    }
+                });
+            } else {
+                alert('Copied report to clipboard.');
+            }
+        }
+
+        function printAiNarrative() {
+            var container = document.getElementById('aiNarrativeContainer');
+            if (!container || !container.innerHTML) return;
+
+            var printWin = window.open('', '_blank', 'width=800,height=900');
+            if (!printWin) {
+                alert('Please allow popups to print narrative report.');
+                return;
+            }
+
+            printWin.document.write(
+                '<!DOCTYPE html><html><head><title>GlobalSCM AI Narrative Daily Report</title>' +
+                '<style>' +
+                'body { font-family: "Segoe UI", Arial, sans-serif; padding: 30px; color: #111; line-height: 1.6; }' +
+                'h2, h3, h4 { color: #111; margin-top: 0; }' +
+                'div { box-sizing: border-box; }' +
+                '@media print { body { padding: 0; } }' +
+                '</style></head><body>' +
+                '<div style="text-align:center; border-bottom:2px solid #333; padding-bottom:15px; margin-bottom:25px;">' +
+                '  <h1 style="margin:0; font-size:22px;">GlobalSCM Supply Chain Logistics</h1>' +
+                '  <h2 style="margin:4px 0 0; font-size:16px; color:#555;">Daily Operational Narrative Briefing</h2>' +
+                '</div>' +
+                container.innerHTML +
+                '<script>window.onload = function(){ window.print(); };<\/script>' +
+                '</body></html>'
+            );
+            printWin.document.close();
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            if (window.location.search.indexOf('narrative=1') !== -1) {
+                setTimeout(openAiNarrativeModal, 350);
+            }
+        });
     </script>
+
+    <!-- AI Daily Narrative Modal -->
+    <div id="aiNarrativeModal" class="modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:9999; justify-content:center; align-items:center; padding:20px; backdrop-filter:blur(4px);">
+        <div style="background:var(--card); border:1px solid var(--border); border-radius:18px; width:100%; max-width:850px; max-height:92vh; overflow-y:auto; padding:28px; box-shadow:0 25px 50px rgba(0,0,0,0.25); display:flex; flex-direction:column;">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:18px; border-bottom:1px solid var(--border); padding-bottom:14px;">
+                <div>
+                    <div style="display:inline-flex; align-items:center; gap:6px; background:linear-gradient(135deg, rgba(37,99,235,0.1), rgba(124,58,237,0.1)); color:#2563EB; padding:4px 12px; border-radius:20px; font-size:11px; font-weight:700; text-transform:uppercase; margin-bottom:6px;">
+                        <i class="fas fa-brain"></i> GlobalSCM AI Intelligence
+                    </div>
+                    <h2 style="font-size:22px; font-weight:700; margin:0; color:var(--text); display:flex; align-items:center; gap:10px;">
+                        AI Operational Daily Narrative Report
+                    </h2>
+                </div>
+                <button type="button" onclick="closeAiNarrativeModal()" style="border:none; background:transparent; font-size:24px; color:var(--secondary-text); cursor:pointer;">&times;</button>
+            </div>
+
+            <!-- Date Picker & Controls Bar -->
+            <div style="display:flex; justify-content:space-between; align-items:center; background:var(--bg); padding:14px 18px; border-radius:12px; border:1px solid var(--border); margin-bottom:20px; flex-wrap:wrap; gap:12px;">
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <label style="font-size:12px; font-weight:600; text-transform:uppercase; color:var(--secondary-text);">Operation Date:</label>
+                    <input type="date" id="aiReportDate" value="<?php echo date('Y-m-d'); ?>" style="padding:7px 12px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text); font-size:13px; font-weight:500;">
+                    <button type="button" onclick="loadAiNarrative()" class="btn btn-primary btn-sm" style="background:#2563EB;">
+                        <i class="fas fa-sync-alt"></i> Generate Narrative
+                    </button>
+                </div>
+                <div style="display:flex; gap:8px;">
+                    <button type="button" onclick="copyNarrativeText()" id="btnCopyNarrative" class="btn btn-outline btn-sm">
+                        <i class="fas fa-copy"></i> Copy Narrative
+                    </button>
+                    <button type="button" onclick="printAiNarrative()" class="btn btn-outline btn-sm">
+                        <i class="fas fa-print"></i> Print Briefing
+                    </button>
+                </div>
+            </div>
+
+            <!-- Report Content Body -->
+            <div id="aiNarrativeLoading" style="display:none; text-align:center; padding:50px 20px;">
+                <i class="fas fa-circle-notch fa-spin" style="font-size:36px; color:var(--primary); margin-bottom:14px;"></i>
+                <div style="font-size:14px; color:var(--text); font-weight:500;">Synthesizing operational warehouse, procurement, and freight data...</div>
+            </div>
+
+            <div id="aiNarrativeContainer" style="display:block;">
+                <!-- Populated dynamically via JS -->
+            </div>
+        </div>
+    </div>
 </body>
 </html>
