@@ -3,9 +3,6 @@
 .vscode
 node_modules
 vendor
-.vscode
-node_modules
-vendor
 laravel-app/node_modules
 laravel-app/vendor
 *.sqlite
@@ -13,12 +10,5 @@ laravel-app/vendor
 *.sqlite-wal
 *.sqlite-shm
 .env
-.env.*
-!.env.example
 .env.local
 .env.*.local
-storage/logs/*
-storage/framework/cache/*
-storage/framework/sessions/*
-storage/framework/views/*
-
