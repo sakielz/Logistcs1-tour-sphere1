@@ -616,81 +616,7 @@ if (!function_exists('initializePostgresDatabase')) {
                 ");
             }
 
-            // Ensure compatibility functions and operators for boolean/integer comparisons
-            $pdo->exec("
-                CREATE OR REPLACE FUNCTION public.bool_eq_int(b boolean, i integer) RETURNS boolean AS $$
-                    SELECT b = (i <> 0);
-                $$ LANGUAGE SQL IMMUTABLE;
-
-                CREATE OR REPLACE FUNCTION public.int_eq_bool(i integer, b boolean) RETURNS boolean AS $$
-                    SELECT (i <> 0) = b;
-                $$ LANGUAGE SQL IMMUTABLE;
-
-                CREATE OR REPLACE FUNCTION public.bool_neq_int(b boolean, i integer) RETURNS boolean AS $$
-                    SELECT b <> (i <> 0);
-                $$ LANGUAGE SQL IMMUTABLE;
-
-                CREATE OR REPLACE FUNCTION public.int_neq_bool(i integer, b boolean) RETURNS boolean AS $$
-                    SELECT (i <> 0) <> b;
-                $$ LANGUAGE SQL IMMUTABLE;
-
-                DO \$\$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_operator o
-                        JOIN pg_namespace n ON o.oprnamespace = n.oid
-                        WHERE oprname = '=' AND oprleft = 'boolean'::regtype AND oprright = 'integer'::regtype
-                    ) THEN
-                        CREATE OPERATOR public.= (
-                            LEFTARG = boolean,
-                            RIGHTARG = integer,
-                            PROCEDURE = public.bool_eq_int,
-                            COMMUTATOR = =
-                        );
-                    END IF;
-
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_operator o
-                        JOIN pg_namespace n ON o.oprnamespace = n.oid
-                        WHERE oprname = '=' AND oprleft = 'integer'::regtype AND oprright = 'boolean'::regtype
-                    ) THEN
-                        CREATE OPERATOR public.= (
-                            LEFTARG = integer,
-                            RIGHTARG = boolean,
-                            PROCEDURE = public.int_eq_bool,
-                            COMMUTATOR = =
-                        );
-                    END IF;
-
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_operator o
-                        JOIN pg_namespace n ON o.oprnamespace = n.oid
-                        WHERE oprname = '<>' AND oprleft = 'boolean'::regtype AND oprright = 'integer'::regtype
-                    ) THEN
-                        CREATE OPERATOR public.<> (
-                            LEFTARG = boolean,
-                            RIGHTARG = integer,
-                            PROCEDURE = public.bool_neq_int,
-                            COMMUTATOR = <>
-                        );
-                    END IF;
-
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_operator o
-                        JOIN pg_namespace n ON o.oprnamespace = n.oid
-                        WHERE oprname = '<>' AND oprleft = 'integer'::regtype AND oprright = 'boolean'::regtype
-                    ) THEN
-                        CREATE OPERATOR public.<> (
-                            LEFTARG = integer,
-                            RIGHTARG = boolean,
-                            PROCEDURE = public.int_neq_bool,
-                            COMMUTATOR = <>
-                        );
-                    END IF;
-                END \$\$;
-            ");
-
-            // Ensure core users exist and have working passwords
+            // Ensure core users exist and have working passwords FIRST
             $defaultAdminHash = '$2y$10$WcY/9xLuH2YbFNcIa0vY4uSVJNclz85LYJwPuAfiU/0pRAzS1x3LS'; // admin@08
             $admin3Hash = '$2y$10$Fq5dIZyuCWj/DWfmLbrAAej7hDeXBxgoXn8n4vKQZjR7dMtwzUf.e'; // admin123
             $alHash = '$2y$10$JhNiWzilRjUHkxvY92JixOXGO0QG..mu4RX.uABGq5mYvKwkWCg2.'; // password
@@ -741,6 +667,84 @@ if (!function_exists('initializePostgresDatabase')) {
             try {
                 $pdo->exec("SELECT setval(pg_get_serial_sequence('users', 'id'), COALESCE(MAX(id), 1)) FROM users");
             } catch (Throwable $seqErr) {}
+
+            // Try to create compatibility functions and operators for boolean/integer comparisons if permitted
+            try {
+                $pdo->exec("
+                    CREATE OR REPLACE FUNCTION public.bool_eq_int(b boolean, i integer) RETURNS boolean AS $$
+                        SELECT b = (i <> 0);
+                    $$ LANGUAGE SQL IMMUTABLE;
+
+                    CREATE OR REPLACE FUNCTION public.int_eq_bool(i integer, b boolean) RETURNS boolean AS $$
+                        SELECT (i <> 0) = b;
+                    $$ LANGUAGE SQL IMMUTABLE;
+
+                    CREATE OR REPLACE FUNCTION public.bool_neq_int(b boolean, i integer) RETURNS boolean AS $$
+                        SELECT b <> (i <> 0);
+                    $$ LANGUAGE SQL IMMUTABLE;
+
+                    CREATE OR REPLACE FUNCTION public.int_neq_bool(i integer, b boolean) RETURNS boolean AS $$
+                        SELECT (i <> 0) <> b;
+                    $$ LANGUAGE SQL IMMUTABLE;
+
+                    DO \$\$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_operator o
+                            JOIN pg_namespace n ON o.oprnamespace = n.oid
+                            WHERE oprname = '=' AND oprleft = 'boolean'::regtype AND oprright = 'integer'::regtype
+                        ) THEN
+                            CREATE OPERATOR public.= (
+                                LEFTARG = boolean,
+                                RIGHTARG = integer,
+                                PROCEDURE = public.bool_eq_int,
+                                COMMUTATOR = =
+                            );
+                        END IF;
+
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_operator o
+                            JOIN pg_namespace n ON o.oprnamespace = n.oid
+                            WHERE oprname = '=' AND oprleft = 'integer'::regtype AND oprright = 'boolean'::regtype
+                        ) THEN
+                            CREATE OPERATOR public.= (
+                                LEFTARG = integer,
+                                RIGHTARG = boolean,
+                                PROCEDURE = public.int_eq_bool,
+                                COMMUTATOR = =
+                            );
+                        END IF;
+
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_operator o
+                            JOIN pg_namespace n ON o.oprnamespace = n.oid
+                            WHERE oprname = '<>' AND oprleft = 'boolean'::regtype AND oprright = 'integer'::regtype
+                        ) THEN
+                            CREATE OPERATOR public.<> (
+                                LEFTARG = boolean,
+                                RIGHTARG = integer,
+                                PROCEDURE = public.bool_neq_int,
+                                COMMUTATOR = <>
+                            );
+                        END IF;
+
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_operator o
+                            JOIN pg_namespace n ON o.oprnamespace = n.oid
+                            WHERE oprname = '<>' AND oprleft = 'integer'::regtype AND oprright = 'boolean'::regtype
+                        ) THEN
+                            CREATE OPERATOR public.<> (
+                                LEFTARG = integer,
+                                RIGHTARG = boolean,
+                                PROCEDURE = public.int_neq_bool,
+                                COMMUTATOR = <>
+                            );
+                        END IF;
+                    END \$\$;
+                ");
+            } catch (Throwable $opErr) {
+                // HostForge managed PostgreSQL users may not have superuser privileges to create operators; safe to ignore
+            }
         } catch (Throwable $e) {
             error_log("[POSTGRES INIT NOTICE] Automatic schema bootstrap: " . $e->getMessage());
         }
