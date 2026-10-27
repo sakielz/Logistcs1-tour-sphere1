@@ -41,6 +41,16 @@ try {
 }
 
 // ============================================
+// GET SUPPLIERS FOR QUOTE COMPARISON
+// ============================================
+try {
+    $stmt = $pdo->query("SELECT id, supplier_code, company_name, rating, performance_score FROM suppliers WHERE status = 'active' AND is_archived = false ORDER BY company_name");
+    $suppliers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $suppliers = [];
+}
+
+// ============================================
 // EXPORT FUNCTIONALITY
 // ============================================
 if ($action === 'export' && isset($_GET['format'])) {
@@ -371,9 +381,123 @@ if ($action === 'view' && isset($_GET['id'])) {
                                    WHERE ri.requisition_id = ?");
             $stmt->execute([$viewRequisition['id']]);
             $viewRequisition['items'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // Fetch supplier quotes & bids evaluation for this requisition
+            try {
+                $qStmt = $pdo->prepare("SELECT rq.*, s.company_name, s.supplier_code, s.contact_person, s.phone, s.email, s.rating 
+                                        FROM requisition_quotes rq 
+                                        JOIN suppliers s ON s.id = rq.supplier_id 
+                                        WHERE rq.requisition_id = ? 
+                                        ORDER BY rq.total_score DESC, rq.quoted_price ASC");
+                $qStmt->execute([$viewRequisition['id']]);
+                $viewRequisition['quotes'] = $qStmt->fetchAll(PDO::FETCH_ASSOC);
+            } catch (Throwable $e) {
+                $viewRequisition['quotes'] = [];
+            }
         }
     } catch (PDOException $e) {
         $_SESSION['error'] = "Error fetching requisition: " . $e->getMessage();
+        header('Location: requisitions.php');
+        exit();
+    }
+}
+
+// ============================================
+// SUBMIT SUPPLIER QUOTE / BID EVALUATION
+// ============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'add_quote') {
+    $requisition_id = (int)($_POST['requisition_id'] ?? 0);
+    $supplier_id = (int)($_POST['supplier_id'] ?? 0);
+    $quoted_price = (float)($_POST['quoted_price'] ?? 0);
+    $currency = trim((string)($_POST['currency'] ?? 'PHP'));
+    $lead_time_days = (int)($_POST['lead_time_days'] ?? 7);
+    $warranty_terms = trim((string)($_POST['warranty_terms'] ?? 'Standard 12 Months Warranty'));
+    $quality_score = (float)($_POST['quality_score'] ?? 85.0);
+    $delivery_score = (float)($_POST['delivery_score'] ?? 85.0);
+    $notes = trim((string)($_POST['notes'] ?? ''));
+
+    try {
+        if ($requisition_id < 1 || $supplier_id < 1 || $quoted_price <= 0) {
+            throw new RuntimeException('Please select a valid requisition, supplier, and quoted price.');
+        }
+
+        // Auto-calculate composite bidding score: Quality (40%) + Delivery SLA (30%) + Cost Score (30%)
+        $prEstStmt = $pdo->prepare("SELECT estimated_total FROM purchase_requisitions WHERE id = ?");
+        $prEstStmt->execute([$requisition_id]);
+        $estTotal = (float)$prEstStmt->fetchColumn();
+        $costScore = ($estTotal > 0 && $quoted_price <= $estTotal) ? min(100, round(($estTotal / $quoted_price) * 85, 2)) : 80.0;
+        $total_score = round(($quality_score * 0.40) + ($delivery_score * 0.30) + ($costScore * 0.30), 2);
+
+        $stmt = $pdo->prepare("INSERT INTO requisition_quotes (requisition_id, supplier_id, quoted_price, currency, lead_time_days, warranty_terms, quality_score, delivery_score, total_score, status, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)");
+        $stmt->execute([$requisition_id, $supplier_id, $quoted_price, $currency, $lead_time_days, $warranty_terms, $quality_score, $delivery_score, $total_score, $notes]);
+
+        logAudit($_SESSION['user_id'], 'add_requisition_quote', 'procurement', "Added supplier quote for PR ID #$requisition_id from Supplier #$supplier_id (₱$quoted_price, Score: $total_score)");
+        $_SESSION['success'] = "Supplier quote submitted & evaluated successfully! Bidding Evaluation Score: $total_score/100";
+        header("Location: requisitions.php?action=view&id=$requisition_id");
+        exit();
+    } catch (Throwable $e) {
+        $_SESSION['error'] = "Error recording quote: " . $e->getMessage();
+        header("Location: requisitions.php?action=view&id=$requisition_id");
+        exit();
+    }
+}
+
+// ============================================
+// AWARD QUOTE & CONVERT TO PURCHASE ORDER
+// ============================================
+if ($action === 'award_quote' && isset($_GET['quote_id'])) {
+    $quote_id = (int)$_GET['quote_id'];
+    try {
+        $pdo->beginTransaction();
+        $qStmt = $pdo->prepare("SELECT rq.*, pr.pr_number, pr.payment_method, s.company_name FROM requisition_quotes rq JOIN purchase_requisitions pr ON pr.id = rq.requisition_id JOIN suppliers s ON s.id = rq.supplier_id WHERE rq.id = ?");
+        $qStmt->execute([$quote_id]);
+        $quote = $qStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$quote) throw new RuntimeException('Quote not found.');
+
+        $reqId = (int)$quote['requisition_id'];
+        $supplierId = (int)$quote['supplier_id'];
+
+        // Mark this quote as awarded, others as rejected
+        $stmt = $pdo->prepare("UPDATE requisition_quotes SET status = 'rejected' WHERE requisition_id = ?");
+        $stmt->execute([$reqId]);
+        $stmt = $pdo->prepare("UPDATE requisition_quotes SET status = 'awarded', awarded_at = CURRENT_TIMESTAMP WHERE id = ?");
+        $stmt->execute([$quote_id]);
+
+        // Convert PR to approved and create PO with awarded supplier
+        $po_number = 'PO-' . date('Ymd') . '-' . str_pad(mt_rand(1, 999), 3, '0', STR_PAD_LEFT);
+        $nowDate = date('Y-m-d H:i:s');
+        $expDeliveryDate = date('Y-m-d H:i:s', strtotime('+' . max(1, (int)$quote['lead_time_days']) . ' days'));
+
+        $stmt2 = $pdo->prepare("INSERT INTO purchase_orders (po_number, supplier_id, payment_method, currency, order_date, expected_delivery, status, approval_status, terms, created_by) VALUES (?, ?, ?, ?, ?, ?, 'approved', 'approved', ?, ?)");
+        $stmt2->execute([$po_number, $supplierId, $quote['payment_method'] ?? 'credit', $quote['currency'] ?? 'PHP', $nowDate, $expDeliveryDate, $quote['warranty_terms'] ?? 'Net 30', $_SESSION['user_id']]);
+        $po_id = $pdo->lastInsertId();
+
+        // Copy items
+        $stmtItems = $pdo->prepare("SELECT * FROM requisition_items WHERE requisition_id = ?");
+        $stmtItems->execute([$reqId]);
+        $items = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($items as $item) {
+            $total_price = $item['quantity'] * $item['unit_price'];
+            $stmtInsertItem = $pdo->prepare("INSERT INTO purchase_order_items (po_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)");
+            $stmtInsertItem->execute([$po_id, $item['product_id'], $item['quantity'], $item['unit_price'], $total_price]);
+        }
+
+        // Set PO total amount to the awarded quote price
+        $stmt3 = $pdo->prepare("UPDATE purchase_orders SET total_amount = ? WHERE id = ?");
+        $stmt3->execute([$quote['quoted_price'], $po_id]);
+
+        // Update requisition
+        $stmt = $pdo->prepare("UPDATE purchase_requisitions SET status = 'converted_to_po' WHERE id = ?");
+        $stmt->execute([$reqId]);
+
+        $pdo->commit();
+        logAudit($_SESSION['user_id'], 'award_requisition_quote', 'procurement', "Awarded quote #$quote_id to {$quote['company_name']} for PO $po_number");
+        $_SESSION['success'] = "Quote awarded to {$quote['company_name']}! PO $po_number generated successfully.";
+        header('Location: purchase-orders.php?action=view&id=' . $po_id);
+        exit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $_SESSION['error'] = "Error awarding quote: " . $e->getMessage();
         header('Location: requisitions.php');
         exit();
     }
@@ -449,7 +573,7 @@ $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $sortField = isset($_GET['sort']) ? $_GET['sort'] : 'created_at';
 $sortOrder = isset($_GET['order']) && $_GET['order'] === 'asc' ? 'ASC' : 'DESC';
 
-$allowedSortFields = ['pr_number', 'title', 'requester_name', 'department', 'estimated_total', 'priority', 'status', 'created_at'];
+$allowedSortFields = ['pr_number', 'title', 'requester_name', 'department', 'estimated_total', 'priority', 'status', 'created_at', 'required_date'];
 if (!in_array($sortField, $allowedSortFields)) {
     $sortField = 'created_at';
 }
@@ -1345,6 +1469,9 @@ try {
                                     <th onclick="sortTable('department')" class="<?php echo $sortField === 'department' ? 'sorted' : ''; ?>">
                                         Department <span class="sort-icon"><?php echo $sortField === 'department' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                     </th>
+                                    <th onclick="sortTable('required_date')" class="<?php echo $sortField === 'required_date' ? 'sorted' : ''; ?>">
+                                        Required Date <span class="sort-icon"><?php echo $sortField === 'required_date' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                    </th>
                                     <th onclick="sortTable('estimated_total')" class="<?php echo $sortField === 'estimated_total' ? 'sorted' : ''; ?>">
                                         Est. Total <span class="sort-icon"><?php echo $sortField === 'estimated_total' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                     </th>
@@ -1370,7 +1497,14 @@ try {
                                         <td><?php echo htmlspecialchars($pr['title']); ?></td>
                                         <td><?php echo htmlspecialchars($pr['requester_name'] ?? 'N/A'); ?></td>
                                         <td><?php echo htmlspecialchars($pr['department'] ?? 'N/A'); ?></td>
-                                        <td>₱<?php echo number_format($pr['estimated_total'], 2); ?></td>
+                                        <td>
+                                            <?php if (!empty($pr['required_date'])): ?>
+                                                <span style="font-weight: 500;"><i class="fas fa-calendar-alt" style="font-size: 11px; color: var(--secondary-text); margin-right: 4px;"></i><?php echo date('M d, Y', strtotime($pr['required_date'])); ?></span>
+                                            <?php else: ?>
+                                                <span style="color: var(--secondary-text);">N/A</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>₱<?php echo number_format($pr['estimated_total'] ?? $pr['estimated_cost'] ?? 0, 2); ?></td>
                                         <td>
                                             <span class="priority-badge priority-<?php echo $pr['priority']; ?>">
                                                 <?php if ($pr['priority'] === 'urgent'): ?>
@@ -1560,6 +1694,94 @@ try {
                 </div>
             </div>
             
+            <!-- Supplier Quote Comparison & Bidding Evaluation -->
+            <div style="margin-top: 25px; padding-top: 15px; border-top: 2px dashed var(--border);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                    <div>
+                        <h4 style="margin: 0; font-size: 15px; color: var(--primary);">
+                            <i class="fas fa-handshake"></i> Supplier Quote Comparison &amp; Bidding Evaluation
+                        </h4>
+                        <span style="font-size: 12px; color: var(--secondary-text);">Compare competitive supplier bids, quality scores, and lead times</span>
+                    </div>
+                    <?php if (in_array($viewRequisition['status'], ['pending_review', 'approved'])): ?>
+                    <button type="button" onclick="document.getElementById('addQuoteModal').style.display='flex';" class="btn btn-outline btn-sm" style="border-color:var(--primary); color:var(--primary);">
+                        <i class="fas fa-plus-circle"></i> Submit Quote / Bid
+                    </button>
+                    <?php endif; ?>
+                </div>
+
+                <?php if (!empty($viewRequisition['quotes'])): ?>
+                <div class="table-container" style="overflow-x: auto; margin-top: 10px;">
+                    <table style="width: 100%; font-size: 13px;">
+                        <thead>
+                            <tr style="background: var(--bg);">
+                                <th style="padding: 8px 10px;">Vendor / Supplier</th>
+                                <th style="padding: 8px 10px;">Quoted Price</th>
+                                <th style="padding: 8px 10px;">Lead Time</th>
+                                <th style="padding: 8px 10px;">Terms</th>
+                                <th style="padding: 8px 10px;">Quality / SLA</th>
+                                <th style="padding: 8px 10px;">Bidding Score</th>
+                                <th style="padding: 8px 10px;">Status</th>
+                                <th style="padding: 8px 10px; text-align: center;">Decision</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($viewRequisition['quotes'] as $q): ?>
+                            <tr>
+                                <td style="padding: 8px 10px;">
+                                    <strong><?php echo htmlspecialchars($q['company_name']); ?></strong>
+                                    <div style="font-size: 11px; color: var(--secondary-text);"><?php echo htmlspecialchars($q['supplier_code']); ?></div>
+                                </td>
+                                <td style="padding: 8px 10px; font-weight: 600; color: #27AE60;">
+                                    ₱<?php echo number_format($q['quoted_price'], 2); ?>
+                                    <span style="font-size: 10px; color: var(--secondary-text);"><?php echo htmlspecialchars($q['currency']); ?></span>
+                                </td>
+                                <td style="padding: 8px 10px;"><?php echo (int)$q['lead_time_days']; ?> days</td>
+                                <td style="padding: 8px 10px; font-size: 11px;"><?php echo htmlspecialchars($q['warranty_terms'] ?? 'Standard'); ?></td>
+                                <td style="padding: 8px 10px;">
+                                    <div>Q: <?php echo number_format($q['quality_score'], 1); ?>%</div>
+                                    <div style="font-size: 11px; color: var(--secondary-text);">D: <?php echo number_format($q['delivery_score'], 1); ?>%</div>
+                                </td>
+                                <td style="padding: 8px 10px;">
+                                    <span class="role-badge" style="font-weight: 700; color: #2F80ED;">
+                                        <?php echo number_format($q['total_score'], 1); ?> / 100
+                                    </span>
+                                </td>
+                                <td style="padding: 8px 10px;">
+                                    <?php if ($q['status'] === 'awarded'): ?>
+                                    <span class="status-badge status-active"><i class="fas fa-trophy"></i> Awarded</span>
+                                    <?php elseif ($q['status'] === 'rejected'): ?>
+                                    <span class="status-badge status-inactive">Not Selected</span>
+                                    <?php else: ?>
+                                    <span class="status-badge" style="background: #FEF3C7; color: #92400E;">Pending Eval</span>
+                                    <?php endif; ?>
+                                </td>
+                                <td style="padding: 8px 10px; text-align: center;">
+                                    <?php if ($q['status'] !== 'awarded' && in_array($viewRequisition['status'], ['pending_review', 'approved'])): ?>
+                                    <a href="requisitions.php?action=award_quote&quote_id=<?php echo $q['id']; ?>" 
+                                       class="btn btn-primary btn-sm" 
+                                       onclick="return confirm('Award this quote to <?php echo htmlspecialchars($q['company_name'], ENT_QUOTES); ?> and generate Purchase Order?');" 
+                                       title="Award contract & convert to PO">
+                                        <i class="fas fa-award"></i> Award Quote
+                                    </a>
+                                    <?php elseif ($q['status'] === 'awarded'): ?>
+                                    <span style="font-size: 11px; color: #27AE60; font-weight: 600;">PO Awarded</span>
+                                    <?php else: ?>
+                                    <span style="font-size: 11px; color: var(--secondary-text);">-</span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php else: ?>
+                <div style="padding: 15px; background: var(--bg); border-radius: 8px; text-align: center; color: var(--secondary-text); font-size: 13px;">
+                    <i class="fas fa-file-invoice" style="margin-right: 6px;"></i> No supplier quotes or bids evaluated yet. Click <strong>Submit Quote / Bid</strong> to compare pricing.
+                </div>
+                <?php endif; ?>
+            </div>
+
             <?php if ($viewRequisition['review_notes']): ?>
             <div style="margin-top: 15px; padding: 10px; background: var(--bg); border-radius: 8px;">
                 <div style="font-size: 12px; color: var(--secondary-text);">Review Notes</div>
@@ -1572,16 +1794,94 @@ try {
                 <?php if ($viewRequisition['status'] === 'pending_review'): ?>
                 <button onclick="openStatusModal(<?php echo $viewRequisition['id']; ?>, '<?php echo htmlspecialchars($viewRequisition['pr_number']); ?>')" 
                         class="btn btn-primary">
-                    <i class="fas fa-check"></i> Review
+                    <i class="fas fa-check"></i> Review / Decide
                 </button>
                 <?php endif; ?>
                 <?php if ($viewRequisition['status'] === 'approved'): ?>
                 <a href="requisitions.php?action=convert_to_po&id=<?php echo $viewRequisition['id']; ?>" 
                    class="btn btn-warning" onclick="return confirm('Convert this requisition to a Purchase Order?');">
-                    <i class="fas fa-exchange-alt"></i> Convert to PO
+                    <i class="fas fa-exchange-alt"></i> Direct Convert to PO
                 </a>
                 <?php endif; ?>
             </div>
+        </div>
+    </div>
+
+    <!-- Submit Supplier Quote Modal -->
+    <div class="modal-overlay" id="addQuoteModal" style="display: none;">
+        <div class="modal" style="max-width: 580px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h3 style="margin:0; font-size:17px; color:var(--primary);">
+                    <i class="fas fa-file-invoice-dollar"></i> Submit Supplier Quote for PR #<?php echo htmlspecialchars($viewRequisition['pr_number']); ?>
+                </h3>
+                <button type="button" onclick="document.getElementById('addQuoteModal').style.display='none';" style="border:none; background:transparent; font-size:18px; cursor:pointer;">&times;</button>
+            </div>
+            <form method="POST" action="requisitions.php?action=add_quote">
+                <input type="hidden" name="requisition_id" value="<?php echo $viewRequisition['id']; ?>">
+                
+                <div class="form-group">
+                    <label>Supplier / Vendor *</label>
+                    <select name="supplier_id" required>
+                        <option value="">-- Choose Vendor --</option>
+                        <?php foreach ($suppliers as $sup): ?>
+                        <option value="<?php echo $sup['id']; ?>">
+                            <?php echo htmlspecialchars($sup['company_name'] . ' (' . $sup['supplier_code'] . ')'); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 12px;">
+                    <div class="form-group">
+                        <label>Quoted Price *</label>
+                        <input type="number" name="quoted_price" step="0.01" required placeholder="e.g., 25000.00">
+                    </div>
+                    <div class="form-group">
+                        <label>Currency</label>
+                        <select name="currency">
+                            <option value="PHP" selected>PHP (₱)</option>
+                            <option value="USD">USD ($)</option>
+                            <option value="EUR">EUR (€)</option>
+                            <option value="JPY">JPY (¥)</option>
+                            <option value="SGD">SGD (S$)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                    <div class="form-group">
+                        <label>Delivery Lead Time (Days) *</label>
+                        <input type="number" name="lead_time_days" value="7" min="1" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Warranty / Contract Terms</label>
+                        <input type="text" name="warranty_terms" value="Net 30 &middot; 12 Mo Warranty" placeholder="e.g., Net 30">
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                    <div class="form-group">
+                        <label>Quality Rating Score (0-100%)</label>
+                        <input type="number" name="quality_score" value="88" min="1" max="100" step="0.5">
+                    </div>
+                    <div class="form-group">
+                        <label>Delivery SLA Score (0-100%)</label>
+                        <input type="number" name="delivery_score" value="90" min="1" max="100" step="0.5">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Quote Proposal Notes / SLA Terms</label>
+                    <textarea name="notes" rows="2" placeholder="e.g., Bulk discount included for 500 units uniforms and safety packs"></textarea>
+                </div>
+
+                <div class="form-actions" style="display:flex; justify-content:flex-end; gap:10px; margin-top:16px;">
+                    <button type="button" onclick="document.getElementById('addQuoteModal').style.display='none';" class="btn btn-outline">Cancel</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-check-circle"></i> Save &amp; Evaluate Quote
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
     <?php endif; ?>

@@ -861,17 +861,49 @@ if ($pdo instanceof PDO) {
         }
     };
 
+    $isPg = in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true);
+
     foreach ([
         ['products', 'brand', 'VARCHAR(150)'],
         ['suppliers', 'supplier_type', "VARCHAR(100) NOT NULL DEFAULT 'general'"],
         ['purchase_orders', 'payment_method', 'VARCHAR(30)'],
         ['purchase_requisitions', 'payment_method', 'VARCHAR(30)'],
         ['warehouses', 'group_id', 'INTEGER'],
+        ['warehouses', 'location_name', 'VARCHAR(255)'],
+        ['warehouses', 'capacity', 'INTEGER DEFAULT 0'],
+        ['warehouses', 'current_utilization', 'INTEGER DEFAULT 0'],
+        ['warehouse_zones', 'bin_number', 'VARCHAR(100)'],
+        ['warehouse_inventory', 'bin_number', 'VARCHAR(100)'],
+        ['products', 'unit_cost', 'NUMERIC(15, 2) DEFAULT 0.00'],
+        ['products', 'quantity_on_hand', 'INTEGER DEFAULT 0'],
+        ['products', 'reorder_level', 'INTEGER DEFAULT 0'],
+        ['products', 'safety_stock', 'INTEGER DEFAULT 0'],
+        ['purchase_requisitions', 'estimated_cost', 'NUMERIC(15, 2) DEFAULT 0.00'],
+        ['suppliers', 'performance_score', 'NUMERIC(5, 2) DEFAULT 0.00'],
+        ['suppliers', 'business_reg_number', 'VARCHAR(100)'],
+        ['suppliers', 'compliance_status', "VARCHAR(50) DEFAULT 'compliant'"],
+        ['suppliers', 'compliance_expiry', 'DATE'],
+        ['purchase_orders', 'currency', "VARCHAR(10) DEFAULT 'PHP'"],
+        ['purchase_orders', 'issue_date', $isPg ? 'DATE' : 'TEXT'],
+        ['purchase_orders', 'subtotal', 'NUMERIC(15, 2) DEFAULT 0.00'],
+        ['purchase_orders', 'tax_amount', 'NUMERIC(15, 2) DEFAULT 0.00'],
+        ['purchase_orders', 'fulfillment_status', "VARCHAR(50) DEFAULT 'issued'"],
+        ['purchase_orders', 'delivery_receipt_ref', 'VARCHAR(100)'],
+        ['purchase_orders', 'vendor_invoice_ref', 'VARCHAR(100)'],
+        ['purchase_orders', 'three_way_matching_status', "VARCHAR(50) DEFAULT 'pending'"],
+        ['purchase_orders', 'three_way_matching_notes', 'TEXT'],
+        ['documents', 'reference_type', 'VARCHAR(100)'],
+        ['documents', 'file_url', 'VARCHAR(255)'],
+        ['documents', 'uploaded_by', 'BIGINT'],
+        ['documents', 'verification_status', "VARCHAR(50) DEFAULT 'pending'"],
+        ['documents', 'verified_by', 'BIGINT'],
+        ['documents', 'verified_at', $isPg ? 'TIMESTAMPTZ' : 'DATETIME'],
+        ['documents', 'verification_notes', 'TEXT'],
         ['purchase_order_items', 'received_quantity', 'INTEGER DEFAULT 0'],
         ['users', 'two_factor_secret', 'TEXT'],
         ['users', 'two_factor_enabled', 'INTEGER DEFAULT 0'],
-        ['users', 'two_factor_confirmed_at', in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true) ? 'TIMESTAMPTZ' : 'DATETIME'],
-        ['users', 'two_factor_recovery_codes_generated_at', in_array($databaseDriver, ['pgsql', 'postgres', 'postgresql'], true) ? 'TIMESTAMPTZ' : 'DATETIME'],
+        ['users', 'two_factor_confirmed_at', $isPg ? 'TIMESTAMPTZ' : 'DATETIME'],
+        ['users', 'two_factor_recovery_codes_generated_at', $isPg ? 'TIMESTAMPTZ' : 'DATETIME'],
         ['users', 'two_factor_time_offset', 'INTEGER DEFAULT 0'],
     ] as [$table, $column, $definition]) {
         if (!$tableExists($pdo, $table)) {
@@ -1172,6 +1204,100 @@ if ($pdo instanceof PDO) {
         )";
     }
     $pdo->exec($incidentDDL);
+
+    // Smart Warehousing System (SWS) - Warehouse Bins
+    // Procurement & Sourcing Management (PSM) - Supplier Quote Comparison & Bidding Evaluation
+    if (in_array($databaseDriver, ['mysql', 'mariadb'], true)) {
+        $binsDDL = "CREATE TABLE IF NOT EXISTS warehouse_bins (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            warehouse_id INT NOT NULL,
+            zone_id INT NULL,
+            bin_number VARCHAR(100) NOT NULL,
+            location_name VARCHAR(255) NULL,
+            storage_capacity INT DEFAULT 100,
+            current_stock_levels INT DEFAULT 0,
+            status VARCHAR(50) DEFAULT 'available',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_bin_wh (warehouse_id),
+            INDEX idx_bin_number (bin_number)
+        )";
+        $quotesDDL = "CREATE TABLE IF NOT EXISTS requisition_quotes (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            requisition_id INT NOT NULL,
+            supplier_id INT NOT NULL,
+            quoted_price NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+            currency VARCHAR(10) DEFAULT 'PHP',
+            lead_time_days INT DEFAULT 7,
+            warranty_terms VARCHAR(255) NULL,
+            quality_score NUMERIC(5, 2) DEFAULT 85.00,
+            delivery_score NUMERIC(5, 2) DEFAULT 85.00,
+            total_score NUMERIC(5, 2) DEFAULT 85.00,
+            status VARCHAR(50) DEFAULT 'pending',
+            notes TEXT NULL,
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            awarded_at TIMESTAMP NULL,
+            INDEX idx_quote_req (requisition_id),
+            INDEX idx_quote_sup (supplier_id)
+        )";
+    } elseif ($isPg) {
+        $binsDDL = "CREATE TABLE IF NOT EXISTS warehouse_bins (
+            id BIGSERIAL PRIMARY KEY,
+            warehouse_id BIGINT NOT NULL,
+            zone_id BIGINT NULL,
+            bin_number VARCHAR(100) NOT NULL,
+            location_name VARCHAR(255) NULL,
+            storage_capacity INTEGER DEFAULT 100,
+            current_stock_levels INTEGER DEFAULT 0,
+            status VARCHAR(50) DEFAULT 'available',
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        )";
+        $quotesDDL = "CREATE TABLE IF NOT EXISTS requisition_quotes (
+            id BIGSERIAL PRIMARY KEY,
+            requisition_id BIGINT NOT NULL,
+            supplier_id BIGINT NOT NULL,
+            quoted_price NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+            currency VARCHAR(10) DEFAULT 'PHP',
+            lead_time_days INTEGER DEFAULT 7,
+            warranty_terms VARCHAR(255) NULL,
+            quality_score NUMERIC(5, 2) DEFAULT 85.00,
+            delivery_score NUMERIC(5, 2) DEFAULT 85.00,
+            total_score NUMERIC(5, 2) DEFAULT 85.00,
+            status VARCHAR(50) DEFAULT 'pending',
+            notes TEXT NULL,
+            submitted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            awarded_at TIMESTAMPTZ NULL
+        )";
+    } else {
+        $binsDDL = "CREATE TABLE IF NOT EXISTS warehouse_bins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            warehouse_id INTEGER NOT NULL,
+            zone_id INTEGER,
+            bin_number TEXT NOT NULL,
+            location_name TEXT,
+            storage_capacity INTEGER DEFAULT 100,
+            current_stock_levels INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'available',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )";
+        $quotesDDL = "CREATE TABLE IF NOT EXISTS requisition_quotes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            requisition_id INTEGER NOT NULL,
+            supplier_id INTEGER NOT NULL,
+            quoted_price REAL NOT NULL DEFAULT 0.00,
+            currency TEXT DEFAULT 'PHP',
+            lead_time_days INTEGER DEFAULT 7,
+            warranty_terms TEXT,
+            quality_score REAL DEFAULT 85.00,
+            delivery_score REAL DEFAULT 85.00,
+            total_score REAL DEFAULT 85.00,
+            status TEXT DEFAULT 'pending',
+            notes TEXT,
+            submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            awarded_at TEXT
+        )";
+    }
+    $pdo->exec($binsDDL);
+    $pdo->exec($quotesDDL);
 
     if (in_array($databaseDriver, ['mysql', 'mariadb'], true)) {
         $migrationCheck = $pdo->prepare("SELECT setting_value FROM system_settings WHERE setting_key = 'report_document_type_migrated'");

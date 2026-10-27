@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 ob_start();
 // admin/documents.php
 require_once __DIR__ . '/../config/database.php';
@@ -43,12 +43,15 @@ $search = isset($_GET['search']) ? trim((string)$_GET['search']) : '';
 
 $documentTypes = [
     'bol' => 'Bill of Lading',
+    'delivery_receipt' => 'Delivery Receipt',
+    'dispatch_waybill' => 'Physical Dispatch Waybill',
+    'import_permit' => 'Import Permit',
+    'customs' => 'Customs Form / Clearance',
+    'invoice' => 'Vendor Invoice',
     'packing_list' => 'Packing List',
-    'invoice' => 'Invoice',
-    'customs' => 'Customs Document',
-    'certificate' => 'Certificate',
-    'contract' => 'Contract',
-    'report' => 'Generated Report'
+    'certificate' => 'Certificate / Compliance',
+    'contract' => 'Contract / Terms',
+    'report' => 'Audit Report'
 ];
 
 // ============================================
@@ -56,12 +59,14 @@ $documentTypes = [
 // ============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'upload') {
     $document_number = isset($_POST['document_number']) ? trim($_POST['document_number']) : '';
-    $document_type = isset($_POST['document_type']) ? $_POST['document_type'] : '';
+    $document_type = isset($_POST['document_type']) ? $_POST['document_type'] : 'other';
+    $reference_type = isset($_POST['reference_type']) ? trim($_POST['reference_type']) : 'PO';
     $title = isset($_POST['title']) ? trim($_POST['title']) : '';
     $description = isset($_POST['description']) ? trim($_POST['description']) : '';
     $related_module = isset($_POST['related_module']) ? $_POST['related_module'] : null;
     $related_id = isset($_POST['related_id']) ? (int)$_POST['related_id'] : null;
-    $status = isset($_POST['status']) ? $_POST['status'] : 'draft';
+    $status = isset($_POST['status']) ? $_POST['status'] : 'pending';
+    $file_url = isset($_POST['file_url']) ? trim($_POST['file_url']) : '';
     
     $file_path = '';
     $uploadError = '';
@@ -87,6 +92,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'upload') {
             
             if (move_uploaded_file($file['tmp_name'], $targetPath)) {
                 $file_path = '/uploads/documents/' . $filename;
+                if (empty($file_url)) {
+                    $file_url = $file_path;
+                }
             } else {
                 $uploadError = 'Failed to upload file.';
             }
@@ -95,11 +103,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'upload') {
     
     if (empty($uploadError)) {
         try {
-            $stmt = $pdo->prepare("INSERT INTO documents (document_number, document_type, title, description, related_module, related_id, status, file_path, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$document_number, $document_type, $title, $description, $related_module, $related_id, $status, $file_path, $_SESSION['user_id']]);
+            $stmt = $pdo->prepare("INSERT INTO documents (document_number, document_type, reference_type, title, description, related_module, related_id, status, file_path, file_url, verification_status, uploaded_by, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)");
+            $stmt->execute([$document_number, $document_type, $reference_type, $title, $description, $related_module, $related_id, $status, $file_path, $file_url, $_SESSION['user_id'], $_SESSION['user_id']]);
             
-            logAudit($_SESSION['user_id'], 'upload_document', 'document', "Uploaded document: $document_number");
-            $_SESSION['success'] = "Document uploaded successfully!";
+            logAudit($_SESSION['user_id'], 'upload_document', 'document', "Uploaded logistics record: $document_number ($document_type, Ref: $reference_type)");
+            $_SESSION['success'] = "Logistics document $document_number uploaded successfully!";
             header('Location: documents.php');
             exit();
         } catch (PDOException $e) {
@@ -108,6 +116,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'upload') {
     } else {
         $error = $uploadError;
     }
+}
+
+// ============================================
+// VERIFY / AUDIT LOGISTICS DOCUMENT
+// ============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'verify') {
+    $id = isset($_POST['id']) ? (int)$_POST['id'] : 0;
+    $vStatus = in_array($_POST['verification_status'] ?? '', ['verified', 'rejected', 'pending'], true) ? $_POST['verification_status'] : 'verified';
+    $vNotes = trim((string)($_POST['verification_notes'] ?? ''));
+
+    try {
+        $stmt = $pdo->prepare("UPDATE documents SET verification_status = ?, verified_by = ?, verified_at = CURRENT_TIMESTAMP, verification_notes = ? WHERE id = ?");
+        $stmt->execute([$vStatus, $_SESSION['user_id'], $vNotes, $id]);
+
+        logAudit($_SESSION['user_id'], 'verify_document', 'document', "Audited document ID #$id: status $vStatus");
+        $_SESSION['success'] = "Document audit verification recorded successfully (Status: " . ucfirst($vStatus) . ")!";
+    } catch (PDOException $e) {
+        $_SESSION['error'] = "Error updating verification: " . $e->getMessage();
+    }
+    header('Location: documents.php');
+    exit();
 }
 
 // ============================================
@@ -392,15 +421,16 @@ if ($action === 'view' && isset($_GET['id'])) {
 $sortField = isset($_GET['sort']) ? trim((string)$_GET['sort']) : 'created_at';
 $sortOrder = isset($_GET['order']) && strtolower((string)$_GET['order']) === 'asc' ? 'ASC' : 'DESC';
 
-$allowedSortFields = ['document_number', 'document_type', 'title', 'related_module', 'status', 'created_at'];
+$allowedSortFields = ['document_number', 'document_type', 'reference_type', 'title', 'related_module', 'verification_status', 'status', 'created_at'];
 if (!in_array($sortField, $allowedSortFields)) {
     $sortField = 'created_at';
 }
 
 try {
-    $query = "SELECT d.*, u.full_name as created_by_name 
+    $query = "SELECT d.*, u.full_name as created_by_name, uv.full_name as verified_by_name 
               FROM documents d 
-              LEFT JOIN users u ON d.created_by = u.id 
+              LEFT JOIN users u ON COALESCE(d.uploaded_by, d.created_by) = u.id 
+              LEFT JOIN users uv ON d.verified_by = uv.id 
               WHERE d.is_archived = ?";
     $params = [$showArchived];
     
@@ -2016,68 +2046,89 @@ try {
                                         <input type="checkbox" id="selectAll" onclick="toggleAll(this);">
                                     </th>
                                     <th onclick="sortTable('document_number')" class="<?php echo $sortField === 'document_number' ? 'sorted' : ''; ?>">
-                                        Doc # <span class="sort-icon"><?php echo $sortField === 'document_number' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                        Doc ID <span class="sort-icon"><?php echo $sortField === 'document_number' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                     </th>
                                     <th onclick="sortTable('document_type')" class="<?php echo $sortField === 'document_type' ? 'sorted' : ''; ?>">
-                                        Type <span class="sort-icon"><?php echo $sortField === 'document_type' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                        Document Record <span class="sort-icon"><?php echo $sortField === 'document_type' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                     </th>
-                                    <th onclick="sortTable('title')" class="<?php echo $sortField === 'title' ? 'sorted' : ''; ?>">
-                                        Title <span class="sort-icon"><?php echo $sortField === 'title' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                    <th onclick="sortTable('reference_type')" class="<?php echo $sortField === 'reference_type' ? 'sorted' : ''; ?>">
+                                        Reference Type <span class="sort-icon"><?php echo $sortField === 'reference_type' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                     </th>
-                                    <th onclick="sortTable('related_module')" class="<?php echo $sortField === 'related_module' ? 'sorted' : ''; ?>">
-                                        Module <span class="sort-icon"><?php echo $sortField === 'related_module' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
-                                    </th>
-                                    <th onclick="sortTable('status')" class="<?php echo $sortField === 'status' ? 'sorted' : ''; ?>">
-                                        Status <span class="sort-icon"><?php echo $sortField === 'status' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
-                                    </th>
+                                    <th>File / URL</th>
+                                    <th>Uploaded By</th>
                                     <th onclick="sortTable('created_at')" class="<?php echo $sortField === 'created_at' ? 'sorted' : ''; ?>">
-                                        Created <span class="sort-icon"><?php echo $sortField === 'created_at' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                        Timestamp <span class="sort-icon"><?php echo $sortField === 'created_at' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                    </th>
+                                    <th onclick="sortTable('verification_status')" class="<?php echo $sortField === 'verification_status' ? 'sorted' : ''; ?>">
+                                        Verification Status <span class="sort-icon"><?php echo $sortField === 'verification_status' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                     </th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <?php if (!empty($paginatedDocuments)): ?>
-                                    <?php foreach ($paginatedDocuments as $doc): ?>
+                                    <?php foreach ($paginatedDocuments as $doc): 
+                                        $fileTarget = !empty($doc['file_url']) ? $doc['file_url'] : $doc['file_path'];
+                                        $vStatus = !empty($doc['verification_status']) ? $doc['verification_status'] : ($doc['status'] === 'approved' ? 'verified' : ($doc['status'] === 'rejected' ? 'rejected' : 'pending'));
+                                        $refTypeDisplay = !empty($doc['reference_type']) ? $doc['reference_type'] : (!empty($doc['related_module']) ? ucfirst(str_replace('_', ' ', $doc['related_module'])) . ' #' . $doc['related_id'] : 'Logistics File');
+                                    ?>
                                     <tr>
                                         <td class="checkbox-cell">
                                             <input type="checkbox" name="ids[]" value="<?php echo $doc['id']; ?>" 
                                                    class="row-checkbox" onchange="updateSelection();">
                                         </td>
-                                        <td><strong><?php echo htmlspecialchars($doc['document_number']); ?></strong></td>
                                         <td>
-                                            <span class="doc-type-badge <?php echo $doc['document_type']; ?>">
-                                                <?php echo $documentTypes[$doc['document_type']] ?? $doc['document_type']; ?>
+                                            <strong><?php echo htmlspecialchars($doc['document_number']); ?></strong>
+                                        </td>
+                                        <td>
+                                            <div><strong><?php echo htmlspecialchars($doc['title']); ?></strong></div>
+                                            <span class="doc-type-badge <?php echo $doc['document_type']; ?>" style="font-size: 11px;">
+                                                <?php echo $documentTypes[$doc['document_type']] ?? ucfirst(str_replace('_', ' ', $doc['document_type'])); ?>
                                             </span>
                                         </td>
                                         <td>
-                                            <div><?php echo htmlspecialchars($doc['title']); ?></div>
-                                            <?php if ($doc['description']): ?>
-                                            <div style="font-size: 12px; color: var(--secondary-text);">
-                                                <?php echo htmlspecialchars(substr($doc['description'], 0, 50)) . (strlen($doc['description']) > 50 ? '...' : ''); ?>
-                                            </div>
-                                            <?php endif; ?>
+                                            <span class="role-badge" style="background: rgba(47, 128, 237, 0.1); color: var(--primary); font-weight: 600;">
+                                                <i class="fas fa-tag" style="font-size: 10px; margin-right: 3px;"></i><?php echo htmlspecialchars($refTypeDisplay); ?>
+                                            </span>
                                         </td>
                                         <td>
-                                            <?php if ($doc['related_module']): ?>
-                                            <span class="role-badge">
-                                                <?php echo ucfirst(str_replace('_', ' ', $doc['related_module'])); ?>
-                                                #<?php echo $doc['related_id']; ?>
-                                            </span>
+                                            <?php if (!empty($fileTarget)): ?>
+                                                <a href="<?php echo htmlspecialchars($fileTarget); ?>" target="_blank" class="btn btn-outline btn-sm" style="font-size: 11px; padding: 4px 8px;" title="Open Digital File">
+                                                    <i class="fas fa-external-link-alt"></i> View File
+                                                </a>
                                             <?php else: ?>
-                                            <span style="color: var(--secondary-text);">N/A</span>
+                                                <span style="color: var(--secondary-text); font-size: 12px;">No attachment</span>
                                             <?php endif; ?>
                                         </td>
                                         <td>
-                                            <span class="status-badge doc-<?php echo $doc['status']; ?>">
-                                                <?php echo ucfirst($doc['status']); ?>
-                                            </span>
+                                            <div style="font-size: 13px; font-weight: 500;"><?php echo htmlspecialchars($doc['created_by_name'] ?? 'System'); ?></div>
                                         </td>
-                                        <td style="font-size: 13px; color: var(--secondary-text);">
-                                            <?php echo date('M d, Y', strtotime($doc['created_at'])); ?>
+                                        <td style="font-size: 12px; color: var(--secondary-text);">
+                                            <?php echo date('M d, Y H:i', strtotime($doc['created_at'])); ?>
+                                        </td>
+                                        <td>
+                                            <span class="status-badge" style="<?php 
+                                                echo $vStatus === 'verified' ? 'background: rgba(39, 174, 96, 0.15); color: #27AE60;' : 
+                                                    ($vStatus === 'rejected' ? 'background: rgba(220, 38, 38, 0.15); color: #DC2626;' : 'background: rgba(245, 158, 11, 0.15); color: #F59E0B;');
+                                            ?> font-size: 11px; font-weight: 600;">
+                                                <i class="fas fa-<?php echo $vStatus === 'verified' ? 'check-circle' : ($vStatus === 'rejected' ? 'times-circle' : 'hourglass-start'); ?>"></i>
+                                                <?php echo ucfirst($vStatus); ?>
+                                            </span>
+                                            <?php if (!empty($doc['verified_by_name'])): ?>
+                                                <div style="font-size: 10px; color: var(--secondary-text);">By: <?php echo htmlspecialchars($doc['verified_by_name']); ?></div>
+                                            <?php endif; ?>
                                         </td>
                                         <td>
                                             <div class="action-buttons">
+                                                <button onclick="openVerifyModal(<?php echo htmlspecialchars(json_encode([
+                                                    'id' => $doc['id'],
+                                                    'document_number' => $doc['document_number'],
+                                                    'title' => $doc['title'],
+                                                    'verification_status' => $vStatus,
+                                                    'verification_notes' => $doc['verification_notes'] ?? ''
+                                                ]), ENT_QUOTES); ?>)" class="btn btn-outline btn-sm" title="Audit & Verify Logistics Record" style="color: #27AE60; border-color: #27AE60;">
+                                                    <i class="fas fa-clipboard-check"></i>
+                                                </button>
                                                 <?php if ($doc['file_path']): ?>
                                                 <a href="documents.php?action=view&id=<?php echo $doc['id']; ?>" 
                                                    class="btn btn-primary btn-sm" title="Preview">
@@ -2107,7 +2158,7 @@ try {
                                                 <?php endif; ?>
                                             </div>
                                         </td>
-                                    </tr>
+                                    </tr>                               </tr>
                                     <?php endforeach; ?>
                                 <?php else: ?>
                                     <tr>
@@ -2236,8 +2287,26 @@ try {
                                value="<?php echo isset($editDocument['related_id']) ? $editDocument['related_id'] : ''; ?>"
                                placeholder="e.g., 123">
                     </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div class="form-group">
+                        <label>Reference Type (PO / Receipt / Waybill) *</label>
+                        <select name="reference_type" required>
+                            <option value="PO" <?php echo (isset($editDocument['reference_type']) && $editDocument['reference_type'] === 'PO') ? 'selected' : ''; ?>>Purchase Order (PO)</option>
+                            <option value="Delivery Receipt" <?php echo (isset($editDocument['reference_type']) && $editDocument['reference_type'] === 'Delivery Receipt') ? 'selected' : ''; ?>>Delivery Receipt (DR)</option>
+                            <option value="Dispatch Waybill" <?php echo (isset($editDocument['reference_type']) && $editDocument['reference_type'] === 'Dispatch Waybill') ? 'selected' : ''; ?>>Physical Dispatch Waybill</option>
+                            <option value="Bill of Lading" <?php echo (isset($editDocument['reference_type']) && $editDocument['reference_type'] === 'Bill of Lading') ? 'selected' : ''; ?>>Bill of Lading (BOL)</option>
+                            <option value="Import Permit" <?php echo (isset($editDocument['reference_type']) && $editDocument['reference_type'] === 'Import Permit') ? 'selected' : ''; ?>>Import Permit / Customs</option>
+                            <option value="Vendor Invoice" <?php echo (isset($editDocument['reference_type']) && $editDocument['reference_type'] === 'Vendor Invoice') ? 'selected' : ''; ?>>Vendor Invoice</option>
+                            <option value="Vendor Contract" <?php echo (isset($editDocument['reference_type']) && $editDocument['reference_type'] === 'Vendor Contract') ? 'selected' : ''; ?>>Vendor / Service Contract</option>
+                            <option value="Other" <?php echo (isset($editDocument['reference_type']) && $editDocument['reference_type'] === 'Other') ? 'selected' : ''; ?>>Other Logistics Record</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>External Document URL (Optional)</label>
+                        <input type="text" name="file_url" placeholder="https://cloud-storage/file.pdf" 
+                               value="<?php echo isset($editDocument['file_url']) ? htmlspecialchars($editDocument['file_url']) : ''; ?>">
+                    </div>
                 </div>
-                
                 <?php if ($editDocument): ?>
                 <div class="form-group">
                     <label>Status</label>
@@ -2363,8 +2432,62 @@ try {
         </div>
     </div>
     <?php endif; ?>
+    <!-- Audit & Verification Modal -->
+    <div id="verifyModal" class="modal-overlay" style="display: none;">
+        <div class="modal" style="max-width: 500px;">
+            <h3>
+                <i class="fas fa-clipboard-check" style="color: var(--primary);"></i> Document Audit & Verification
+                <button type="button" class="close-modal" onclick="closeVerifyModal()">&times;</button>
+            </h3>
+            <p style="font-size: 13px; color: var(--secondary-text); margin-bottom: 16px;">
+                Perform compliance audit and verify authenticity of logistics record (Bill of Lading, Delivery Receipt, Permit, Waybill).
+            </p>
+            <form method="POST" action="documents.php?action=verify">
+                <input type="hidden" name="id" id="verifyDocId">
+                <div style="background: var(--bg); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+                    <div style="font-size: 11px; color: var(--secondary-text);">Document ID</div>
+                    <div id="verifyDocNumber" style="font-weight: 700; font-size: 14px;"></div>
+                    <div id="verifyDocTitle" style="font-size: 12px; color: var(--text); margin-top: 2px;"></div>
+                </div>
+
+                <div class="form-group">
+                    <label>Audit Verification Status *</label>
+                    <select name="verification_status" id="verifyStatus" required>
+                        <option value="verified">Verified & Audited (Compliant)</option>
+                        <option value="pending">Pending Further Audit / Review</option>
+                        <option value="rejected">Rejected / Non-Compliant</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Audit & Verification Remarks</label>
+                    <textarea name="verification_notes" id="verifyNotes" rows="3" placeholder="Enter auditor remarks, stamp references, customs notes, or discrepancy findings..."></textarea>
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" onclick="closeVerifyModal()" class="btn btn-outline">Cancel</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-stamp"></i> Record Audit
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
     
     <script>
+        function openVerifyModal(doc) {
+            document.getElementById('verifyDocId').value = doc.id;
+            document.getElementById('verifyDocNumber').innerText = doc.document_number;
+            document.getElementById('verifyDocTitle').innerText = doc.title;
+            document.getElementById('verifyStatus').value = doc.verification_status || 'verified';
+            document.getElementById('verifyNotes').value = doc.verification_notes || '';
+            document.getElementById('verifyModal').style.display = 'flex';
+        }
+
+        function closeVerifyModal() {
+            document.getElementById('verifyModal').style.display = 'none';
+        }
+
         // ============================================
         // DROPDOWN TOGGLES
         // ============================================

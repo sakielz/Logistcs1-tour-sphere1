@@ -20,6 +20,7 @@ $showProcurement = isset($visibility['show_procurement']) ? $visibility['show_pr
 $showSuppliers = isset($visibility['show_suppliers']) ? $visibility['show_suppliers'] : true;
 $showPurchaseOrders = isset($visibility['show_purchase_orders']) ? $visibility['show_purchase_orders'] : true;
 $showLogistics = isset($visibility['show_logistics']) ? $visibility['show_logistics'] : true;
+$showTourOperations = isset($visibility['show_tour_operations']) ? $visibility['show_tour_operations'] : true;
 
 // Role-based visibility adjustments
 $currentUserRole = strtolower(trim($_SESSION['role'] ?? ''));
@@ -30,6 +31,7 @@ if ($currentUserRole === 'supplier') {
     $showSuppliers = false;
     $showPurchaseOrders = false;
     $showLogistics = false;
+    $showTourOperations = false;
 }
 
 // Get theme
@@ -107,16 +109,16 @@ $currentPage = basename($_SERVER['PHP_SELF']);
         </div>
     </div>
     
-    <!-- ===== WAREHOUSING MODULE ===== -->
+    <!-- ===== 1. SMART WAREHOUSING SYSTEM (SWS) ===== -->
     <?php if ($showWarehousing): ?>
     <div class="nav-section">
         <div class="nav-section-title" onclick="toggleSection(this)">
-            Warehousing
+            Smart Warehousing (SWS)
             <span class="collapse-icon"><i class="fas fa-chevron-down"></i></span>
         </div>
         <div class="nav-items">
             <a href="warehouses.php" class="nav-item <?php echo $currentPage === 'warehouses.php' ? 'active' : ''; ?>">
-                <i class="fas fa-warehouse"></i> Warehouses
+                <i class="fas fa-warehouse"></i> Multi-Location Warehouses
                 <?php
                 try {
                     $stmt = $pdo->query("SELECT COUNT(*) as count FROM warehouses WHERE is_archived = 0");
@@ -128,7 +130,7 @@ $currentPage = basename($_SERVER['PHP_SELF']);
                 ?>
             </a>
             <a href="warehouse-zones.php" class="nav-item sub-nav <?php echo $currentPage === 'warehouse-zones.php' ? 'active' : ''; ?>">
-                <i class="fas fa-layer-group"></i> Zone Management
+                <i class="fas fa-layer-group"></i> Zone &amp; Bin Tracking
                 <?php
                 try {
                     $stmt = $pdo->query("SELECT COUNT(*) as count FROM warehouse_zones wz JOIN warehouses w ON wz.warehouse_id = w.id WHERE w.is_archived = 0");
@@ -143,16 +145,16 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     </div>
     <?php endif; ?>
     
-    <!-- ===== INVENTORY MODULE ===== -->
+    <!-- ===== 2. INVENTORY MANAGEMENT SYSTEM ===== -->
     <?php if ($showInventory): ?>
     <div class="nav-section">
         <div class="nav-section-title" onclick="toggleSection(this)">
-            Inventory
+            Inventory Management
             <span class="collapse-icon"><i class="fas fa-chevron-down"></i></span>
         </div>
         <div class="nav-items">
             <a href="inventory.php" class="nav-item <?php echo $currentPage === 'inventory.php' ? 'active' : ''; ?>">
-                <i class="fas fa-boxes"></i> Products
+                <i class="fas fa-boxes"></i> Inventory &amp; Valuation
                 <?php
                 try {
                     $stmt = $pdo->query("SELECT COUNT(*) as count FROM products WHERE is_archived = 0");
@@ -164,7 +166,7 @@ $currentPage = basename($_SERVER['PHP_SELF']);
                 ?>
             </a>
             <a href="stock-movements.php" class="nav-item <?php echo $currentPage === 'stock-movements.php' ? 'active' : ''; ?>">
-                <i class="fas fa-exchange-alt"></i> Stock Movements
+                <i class="fas fa-exchange-alt"></i> Stock Intake &amp; Dispatch
             </a>
             <?php
             try {
@@ -172,7 +174,7 @@ $currentPage = basename($_SERVER['PHP_SELF']);
                 $lowStock = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
                 if ($lowStock > 0): ?>
                 <a href="inventory.php?filter=low_stock" class="nav-item sub-nav" style="color: #DC2626;">
-                    <i class="fas fa-exclamation-triangle"></i> Low Stock Alert
+                    <i class="fas fa-exclamation-triangle"></i> Reorder Level Alerts
                     <span class="badge" style="background: #DC2626;"><?php echo $lowStock; ?></span>
                 </a>
                 <?php endif;
@@ -182,46 +184,16 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     </div>
     <?php endif; ?>
     
-    <!-- ===== PROCUREMENT MODULE ===== -->
+    <!-- ===== 3. PROCUREMENT & SOURCING MANAGEMENT (PSM) ===== -->
     <?php if ($showProcurement): ?>
     <div class="nav-section">
         <div class="nav-section-title" onclick="toggleSection(this)">
-            Procurement
+            Procurement &amp; Sourcing (PSM)
             <span class="collapse-icon"><i class="fas fa-chevron-down"></i></span>
         </div>
         <div class="nav-items">
-            <?php if ($showSuppliers): ?>
-            <a href="suppliers.php" class="nav-item <?php echo $currentPage === 'suppliers.php' ? 'active' : ''; ?>">
-                <i class="fas fa-truck"></i> Suppliers
-                <?php
-                try {
-                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM suppliers WHERE is_archived = 0");
-                    $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
-                    if ($count > 0): ?>
-                    <span class="badge"><?php echo $count; ?></span>
-                    <?php endif;
-                } catch (Exception $e) {}
-                ?>
-            </a>
-            <?php endif; ?>
-            
-            <?php if ($showPurchaseOrders): ?>
-            <a href="purchase-orders.php" class="nav-item <?php echo $currentPage === 'purchase-orders.php' ? 'active' : ''; ?>">
-                <i class="fas fa-file-invoice"></i> Purchase Orders
-                <?php
-                try {
-                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM purchase_orders WHERE status IN ('pending', 'approved') AND is_archived = 0");
-                    $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
-                    if ($count > 0): ?>
-                    <span class="badge" style="background: #F59E0B;"><?php echo $count; ?></span>
-                    <?php endif;
-                } catch (Exception $e) {}
-                ?>
-            </a>
-            <?php endif; ?>
-            
             <a href="requisitions.php" class="nav-item <?php echo $currentPage === 'requisitions.php' ? 'active' : ''; ?>">
-                <i class="fas fa-clipboard-list"></i> Requisitions
+                <i class="fas fa-clipboard-list"></i> Purchase Requisitions
                 <?php
                 try {
                     $stmt = $pdo->query("SELECT COUNT(*) as count FROM purchase_requisitions WHERE status = 'pending_review' AND is_archived = 0");
@@ -234,7 +206,7 @@ $currentPage = basename($_SERVER['PHP_SELF']);
             </a>
             
             <a href="contracts.php" class="nav-item <?php echo $currentPage === 'contracts.php' ? 'active' : ''; ?>">
-                <i class="fas fa-file-signature"></i> Contracts
+                <i class="fas fa-file-signature"></i> Contract Terms Tracking
                 <?php
                 try {
                     $stmt = $pdo->query("SELECT COUNT(*) as count FROM procurement_contracts WHERE status = 'active' AND is_archived = 0");
@@ -245,15 +217,50 @@ $currentPage = basename($_SERVER['PHP_SELF']);
                 } catch (Exception $e) {}
                 ?>
             </a>
-            
-            <a href="bidding.php" class="nav-item <?php echo $currentPage === 'bidding.php' ? 'active' : ''; ?>">
-                <i class="fas fa-gavel"></i> Freight Bidding
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <!-- ===== 4. SUPPLIER / VENDOR MANAGEMENT ===== -->
+    <?php if ($showSuppliers): ?>
+    <div class="nav-section">
+        <div class="nav-section-title" onclick="toggleSection(this)">
+            Vendor Management
+            <span class="collapse-icon"><i class="fas fa-chevron-down"></i></span>
+        </div>
+        <div class="nav-items">
+            <a href="suppliers.php" class="nav-item <?php echo $currentPage === 'suppliers.php' ? 'active' : ''; ?>">
+                <i class="fas fa-truck"></i> Suppliers &amp; Compliance
                 <?php
                 try {
-                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM bidding_tenders WHERE status IN ('open', 'under_evaluation') AND is_archived = 0");
+                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM suppliers WHERE is_archived = 0");
                     $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
                     if ($count > 0): ?>
-                    <span class="badge" style="background: #2563EB;"><?php echo $count; ?></span>
+                    <span class="badge"><?php echo $count; ?></span>
+                    <?php endif;
+                } catch (Exception $e) {}
+                ?>
+            </a>
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <!-- ===== 5. PURCHASE ORDER MANAGEMENT ===== -->
+    <?php if ($showPurchaseOrders): ?>
+    <div class="nav-section">
+        <div class="nav-section-title" onclick="toggleSection(this)">
+            Purchase Order Management
+            <span class="collapse-icon"><i class="fas fa-chevron-down"></i></span>
+        </div>
+        <div class="nav-items">
+            <a href="purchase-orders.php" class="nav-item <?php echo $currentPage === 'purchase-orders.php' ? 'active' : ''; ?>">
+                <i class="fas fa-file-invoice"></i> Purchase Orders &amp; 3-Way Match
+                <?php
+                try {
+                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM purchase_orders WHERE status IN ('pending', 'approved', 'issued', 'partial') AND is_archived = 0");
+                    $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
+                    if ($count > 0): ?>
+                    <span class="badge" style="background: #F59E0B;"><?php echo $count; ?></span>
                     <?php endif;
                 } catch (Exception $e) {}
                 ?>
@@ -262,26 +269,14 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     </div>
     <?php endif; ?>
     
-    <!-- ===== SUPPLIER BIDDING MODULE ===== -->
+    <!-- ===== SUPPLIER PORTAL (FOR SUPPLIER ROLES) ===== -->
     <?php if ($currentUserRole === 'supplier'): ?>
     <div class="nav-section">
         <div class="nav-section-title" onclick="toggleSection(this)">
-            Bidding Module
+            Supplier Portal
             <span class="collapse-icon"><i class="fas fa-chevron-down"></i></span>
         </div>
         <div class="nav-items">
-            <a href="bidding.php" class="nav-item <?php echo $currentPage === 'bidding.php' ? 'active' : ''; ?>">
-                <i class="fas fa-gavel"></i> Freight &amp; Tender Bidding
-                <?php
-                try {
-                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM bidding_tenders WHERE status IN ('open', 'under_evaluation') AND is_archived = 0");
-                    $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
-                    if ($count > 0): ?>
-                    <span class="badge" style="background: #2563EB;"><?php echo $count; ?></span>
-                    <?php endif;
-                } catch (Exception $e) {}
-                ?>
-            </a>
             <a href="documents.php" class="nav-item <?php echo $currentPage === 'documents.php' ? 'active' : ''; ?>">
                 <i class="fas fa-file-alt"></i> Documents &amp; Rate Sheets
             </a>
@@ -289,16 +284,28 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     </div>
     <?php endif; ?>
     
-    <!-- ===== LOGISTICS MODULE ===== -->
+    <!-- ===== 6. DOCUMENT TRACKING & LOGISTICS RECORDS (DTRS) ===== -->
     <?php if ($showLogistics): ?>
     <div class="nav-section">
         <div class="nav-section-title" onclick="toggleSection(this)">
-            Logistics
+            Document Tracking (DTRS)
             <span class="collapse-icon"><i class="fas fa-chevron-down"></i></span>
         </div>
         <div class="nav-items">
+            <a href="documents.php" class="nav-item <?php echo $currentPage === 'documents.php' ? 'active' : ''; ?>">
+                <i class="fas fa-file-alt"></i> Logistics Records &amp; Auditing
+                <?php
+                try {
+                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM documents WHERE status = 'pending' AND is_archived = 0");
+                    $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
+                    if ($count > 0): ?>
+                    <span class="badge" style="background: #F59E0B;"><?php echo $count; ?></span>
+                    <?php endif;
+                } catch (Exception $e) {}
+                ?>
+            </a>
             <a href="shipments.php" class="nav-item <?php echo $currentPage === 'shipments.php' ? 'active' : ''; ?>">
-                <i class="fas fa-ship"></i> Shipments
+                <i class="fas fa-ship"></i> Shipments &amp; Waybills
                 <?php
                 try {
                     $stmt = $pdo->query("SELECT COUNT(*) as count FROM shipments WHERE status IN ('pending', 'in_transit') AND is_archived = 0");
@@ -309,14 +316,79 @@ $currentPage = basename($_SERVER['PHP_SELF']);
                 } catch (Exception $e) {}
                 ?>
             </a>
-            <a href="documents.php" class="nav-item <?php echo $currentPage === 'documents.php' ? 'active' : ''; ?>">
-                <i class="fas fa-file-alt"></i> Documents
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <!-- ===== 7. TOUR OPERATIONS SPECIALIZED SCM ===== -->
+    <?php if ($showTourOperations && $currentUserRole !== 'supplier'): ?>
+    <div class="nav-section">
+        <div class="nav-section-title" onclick="toggleSection(this)">
+            Tour Operations SCM
+            <span class="collapse-icon"><i class="fas fa-chevron-down"></i></span>
+        </div>
+        <div class="nav-items">
+            <a href="fleet-parts.php" class="nav-item <?php echo $currentPage === 'fleet-parts.php' ? 'active' : ''; ?>">
+                <i class="fas fa-bus"></i> Fleet &amp; Spare Parts
                 <?php
                 try {
-                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM documents WHERE status = 'pending' AND is_archived = 0");
-                    $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0;
-                    if ($count > 0): ?>
-                    <span class="badge" style="background: #F59E0B;"><?php echo $count; ?></span>
+                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM fleet_parts WHERE on_hand <= min_critical AND is_archived = 0");
+                    $fpCrit = (int)($stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+                    if ($fpCrit > 0): ?>
+                    <span class="badge" style="background: #EF4444;"><?php echo $fpCrit; ?></span>
+                    <?php endif;
+                } catch (Exception $e) {}
+                ?>
+            </a>
+            <a href="demand-forecast.php" class="nav-item <?php echo $currentPage === 'demand-forecast.php' ? 'active' : ''; ?>">
+                <i class="fas fa-chart-line"></i> Demand Forecasting
+            </a>
+            <a href="tour-kits.php" class="nav-item <?php echo $currentPage === 'tour-kits.php' ? 'active' : ''; ?>">
+                <i class="fas fa-toolbox"></i> Tour Kit Bundling (BOM)
+                <?php
+                try {
+                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM tour_kits WHERE is_archived = 0");
+                    $tkCount = (int)($stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+                    if ($tkCount > 0): ?>
+                    <span class="badge"><?php echo $tkCount; ?></span>
+                    <?php endif;
+                } catch (Exception $e) {}
+                ?>
+            </a>
+            <a href="asset-tracking.php" class="nav-item <?php echo $currentPage === 'asset-tracking.php' ? 'active' : ''; ?>">
+                <i class="fas fa-barcode"></i> Asset Lifecycle (ALTM)
+                <?php
+                try {
+                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM assets_register WHERE status = 'checked_out' AND is_archived = 0");
+                    $outCount = (int)($stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+                    if ($outCount > 0): ?>
+                    <span class="badge" style="background: #F59E0B;"><?php echo $outCount; ?></span>
+                    <?php endif;
+                } catch (Exception $e) {}
+                ?>
+            </a>
+            <a href="quality-returns.php" class="nav-item <?php echo $currentPage === 'quality-returns.php' ? 'active' : ''; ?>">
+                <i class="fas fa-clipboard-check"></i> Quality &amp; Returns (RMA)
+                <?php
+                try {
+                    $stmt = $pdo->query("SELECT COUNT(*) as count FROM rma_requests WHERE status IN ('requested', 'received', 'under_review')");
+                    $rmaCount = (int)($stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+                    if ($rmaCount > 0): ?>
+                    <span class="badge" style="background: #EF4444;"><?php echo $rmaCount; ?></span>
+                    <?php endif;
+                } catch (Exception $e) {}
+                ?>
+            </a>
+            <a href="allotments.php" class="nav-item <?php echo $currentPage === 'allotments.php' ? 'active' : ''; ?>">
+                <i class="fas fa-calendar-check"></i> Service Allotments
+                <?php
+                try {
+                    $cutDate = date('Y-m-d', strtotime('+5 days'));
+                    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM service_allotments WHERE status = 'open' AND release_date <= ? AND units_sold < units_allotted");
+                    $stmt->execute([$cutDate]);
+                    $dueCount = (int)($stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
+                    if ($dueCount > 0): ?>
+                    <span class="badge" style="background: #F59E0B;"><?php echo $dueCount; ?></span>
                     <?php endif;
                 } catch (Exception $e) {}
                 ?>
@@ -582,7 +654,7 @@ $currentPage = basename($_SERVER['PHP_SELF']);
 
     .nav-items {
         overflow: hidden !important;
-        max-height: 280px !important;
+        max-height: 520px !important;
         opacity: 1 !important;
         transform: translateY(0) !important;
         transition: max-height 0.22s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.18s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;

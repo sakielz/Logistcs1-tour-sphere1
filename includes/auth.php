@@ -37,6 +37,12 @@ if (!defined('ROLE_PAGE_MAP')) {
             'warehouse-zones.php',
             'inventory.php',
             'stock-movements.php',
+            'fleet-parts.php',
+            'demand-forecast.php',
+            'tour-kits.php',
+            'asset-tracking.php',
+            'quality-returns.php',
+            'allotments.php',
             'reports.php',
         ],
 
@@ -49,6 +55,9 @@ if (!defined('ROLE_PAGE_MAP')) {
             'bidding.php',
             'shipments.php',
             'documents.php',
+            'demand-forecast.php',
+            'quality-returns.php',
+            'allotments.php',
             'reports.php',
         ],
 
@@ -56,6 +65,8 @@ if (!defined('ROLE_PAGE_MAP')) {
             'dashboard.php',
             'inventory.php',
             'stock-movements.php',
+            'fleet-parts.php',
+            'tour-kits.php',
             'reports.php',
         ],
 

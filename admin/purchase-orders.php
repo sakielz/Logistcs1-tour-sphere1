@@ -20,6 +20,19 @@ $action = isset($_GET['action']) ? $_GET['action'] : 'list';
 // Get theme setting
 $theme = getTheme();
 
+if (!function_exists('getCurrencySymbol')) {
+    function getCurrencySymbol($curr) {
+        switch (strtoupper($curr ?? 'PHP')) {
+            case 'USD': return '$';
+            case 'EUR': return '€';
+            case 'JPY': return '¥';
+            case 'SGD': return 'S$';
+            case 'PHP':
+            default: return '₱';
+        }
+    }
+}
+
 // ============================================
 // GET SUPPLIERS FOR DROPDOWN
 // ============================================
@@ -227,6 +240,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $expected_delivery = isset($_POST['expected_delivery']) ? $_POST['expected_delivery'] : '';
     $shipping_address = isset($_POST['shipping_address']) ? trim($_POST['shipping_address']) : '';
     $warehouse_id = isset($_POST['warehouse_id']) ? (int)$_POST['warehouse_id'] : 0;
+    $currency = in_array($_POST['currency'] ?? '', ['PHP', 'USD', 'EUR', 'JPY', 'SGD'], true) ? $_POST['currency'] : 'PHP';
     $payment_method = trim((string)($_POST['payment_method'] ?? ''));
     $terms = isset($_POST['terms']) ? trim($_POST['terms']) : '';
     $notes = isset($_POST['notes']) ? trim($_POST['notes']) : '';
@@ -246,13 +260,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
 
         $pdo->beginTransaction();
         
-        $stmt = $pdo->prepare("INSERT INTO purchase_orders (po_number, supplier_id, warehouse_id, order_date, expected_delivery, shipping_address, payment_method, terms, notes, status, approval_status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending_review', ?)");
-        $stmt->execute([$po_number, $supplier_id, $warehouse_id, $order_date, $expected_delivery, $shipping_address, $payment_method, $terms, $notes, $_SESSION['user_id']]);
+        $stmt = $pdo->prepare("INSERT INTO purchase_orders (po_number, supplier_id, warehouse_id, order_date, issue_date, currency, expected_delivery, shipping_address, payment_method, terms, notes, status, approval_status, fulfillment_status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending_review', 'issued', ?)");
+        $stmt->execute([$po_number, $supplier_id, $warehouse_id, $order_date, $order_date, $currency, $expected_delivery, $shipping_address, $payment_method, $terms, $notes, $_SESSION['user_id']]);
         $po_id = $pdo->lastInsertId();
         
         // Add items
         $items = isset($_POST['items']) ? $_POST['items'] : [];
-        $total_amount = 0;
+        $subtotal = 0;
         
         foreach ($items as $item) {
             if (!empty($item['product_id']) && !empty($item['quantity']) && !empty($item['unit_price'])) {
@@ -260,26 +274,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
                 $quantity = (int)$item['quantity'];
                 $unit_price = (float)$item['unit_price'];
                 $total_price = $quantity * $unit_price;
-                $total_amount += $total_price;
+                $subtotal += $total_price;
                 
                 $stmt = $pdo->prepare("INSERT INTO purchase_order_items (po_id, product_id, quantity, unit_price, total_price, expected_date) VALUES (?, ?, ?, ?, ?, ?)");
                 $stmt->execute([$po_id, $product_id, $quantity, $unit_price, $total_price, $expected_delivery]);
             }
         }
         
-        // Update total
-        $stmt = $pdo->prepare("UPDATE purchase_orders SET total_amount = ? WHERE id = ?");
-        $stmt->execute([$total_amount, $po_id]);
+        // Update subtotal, tax (12% VAT), and total
+        $tax_amount = round($subtotal * 0.12, 2);
+        $total_amount = $subtotal + $tax_amount;
+        $stmt = $pdo->prepare("UPDATE purchase_orders SET subtotal = ?, tax_amount = ?, total_amount = ? WHERE id = ?");
+        $stmt->execute([$subtotal, $tax_amount, $total_amount, $po_id]);
         
         $pdo->commit();
         
-        logAudit($_SESSION['user_id'], 'create_po', 'purchase_order', "Created PO: $po_number using payment method: $payment_method");
-        $_SESSION['success'] = "Purchase Order $po_number created successfully!";
+        logAudit($_SESSION['user_id'], 'create_po', 'purchase_order', "Created PO: $po_number [$currency] using payment method: $payment_method");
+        $_SESSION['success'] = "Purchase Order $po_number created successfully ($currency " . number_format($total_amount, 2) . ")!";
         header('Location: purchase-orders.php');
         exit();
     } catch (Throwable $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
         $error = "Error creating PO: " . $e->getMessage();
+    }
+}
+
+// ============================================
+// 3-WAY MATCHING (PO vs. Delivery Receipt vs. Vendor Invoice)
+// ============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'three_way_match') {
+    $id = isset($_POST['id']) ? (int)$_POST['id'] : 0;
+    $delivery_receipt_ref = trim((string)($_POST['delivery_receipt_ref'] ?? ''));
+    $vendor_invoice_ref = trim((string)($_POST['vendor_invoice_ref'] ?? ''));
+    $matching_status = in_array($_POST['matching_status'] ?? '', ['matched', 'discrepancy', 'pending'], true) ? $_POST['matching_status'] : 'pending';
+    $fulfillment_status = in_array($_POST['fulfillment_status'] ?? '', ['issued', 'partial', 'fulfilled', 'canceled'], true) ? $_POST['fulfillment_status'] : 'partial';
+    $matching_notes = trim((string)($_POST['matching_notes'] ?? ''));
+
+    try {
+        $stmt = $pdo->prepare("UPDATE purchase_orders SET delivery_receipt_ref = ?, vendor_invoice_ref = ?, three_way_matching_status = ?, fulfillment_status = ?, three_way_matching_notes = ? WHERE id = ?");
+        $stmt->execute([$delivery_receipt_ref, $vendor_invoice_ref, $matching_status, $fulfillment_status, $matching_notes, $id]);
+
+        logAudit($_SESSION['user_id'], 'three_way_matching', 'purchase_order', "Performed 3-Way Matching on PO #$id: status $matching_status, fulfillment $fulfillment_status");
+        $_SESSION['success'] = "3-Way Matching record updated successfully (Status: " . ucfirst($matching_status) . ")!";
+        header('Location: purchase-orders.php');
+        exit();
+    } catch (Throwable $e) {
+        $_SESSION['error'] = "Error updating 3-Way Match: " . $e->getMessage();
+        header('Location: purchase-orders.php');
+        exit();
     }
 }
 
@@ -522,13 +564,14 @@ $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $sortField = isset($_GET['sort']) ? $_GET['sort'] : 'created_at';
 $sortOrder = isset($_GET['order']) && $_GET['order'] === 'asc' ? 'ASC' : 'DESC';
 
-$allowedSortFields = ['po_number', 'company_name', 'order_date', 'total_amount', 'payment_method', 'status', 'approval_status', 'created_at'];
+$allowedSortFields = ['po_number', 'company_name', 'order_date', 'total_amount', 'subtotal', 'fulfillment_status', 'payment_method', 'status', 'approval_status', 'created_at'];
 if (!in_array($sortField, $allowedSortFields)) {
     $sortField = 'created_at';
 }
 
 try {
-    $query = "SELECT po.*, s.company_name, u.full_name as created_by_name 
+    $query = "SELECT po.*, s.company_name, s.supplier_code, u.full_name as created_by_name,
+              (SELECT COUNT(*) FROM purchase_order_items WHERE po_id = po.id) as line_item_count 
               FROM purchase_orders po 
               LEFT JOIN suppliers s ON po.supplier_id = s.id 
               LEFT JOIN users u ON po.created_by = u.id 
@@ -1470,56 +1513,78 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                                         PO Number <span class="sort-icon"><?php echo $sortField === 'po_number' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                     </th>
                                     <th onclick="sortTable('company_name')" class="<?php echo $sortField === 'company_name' ? 'sorted' : ''; ?>">
-                                        Supplier <span class="sort-icon"><?php echo $sortField === 'company_name' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                        Supplier / Vendor <span class="sort-icon"><?php echo $sortField === 'company_name' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                     </th>
                                     <th onclick="sortTable('order_date')" class="<?php echo $sortField === 'order_date' ? 'sorted' : ''; ?>">
-                                        Date <span class="sort-icon"><?php echo $sortField === 'order_date' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                        Issue Date <span class="sort-icon"><?php echo $sortField === 'order_date' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                     </th>
+                                    <th>Items</th>
+                                    <th onclick="sortTable('subtotal')" class="<?php echo $sortField === 'subtotal' ? 'sorted' : ''; ?>">
+                                        Subtotal <span class="sort-icon"><?php echo $sortField === 'subtotal' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                    </th>
+                                    <th>Tax (12%)</th>
                                     <th onclick="sortTable('total_amount')" class="<?php echo $sortField === 'total_amount' ? 'sorted' : ''; ?>">
-                                        Total <span class="sort-icon"><?php echo $sortField === 'total_amount' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                        Total Amount <span class="sort-icon"><?php echo $sortField === 'total_amount' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                     </th>
-                                    <th onclick="sortTable('payment_method')" class="<?php echo $sortField === 'payment_method' ? 'sorted' : ''; ?>">
-                                        Payment Method <span class="sort-icon"><?php echo $sortField === 'payment_method' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                    <th onclick="sortTable('fulfillment_status')" class="<?php echo $sortField === 'fulfillment_status' ? 'sorted' : ''; ?>">
+                                        Fulfillment <span class="sort-icon"><?php echo $sortField === 'fulfillment_status' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                     </th>
-                                    <th onclick="sortTable('status')" class="<?php echo $sortField === 'status' ? 'sorted' : ''; ?>">
-                                        Status <span class="sort-icon"><?php echo $sortField === 'status' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
-                                    </th>
-                                    <th onclick="sortTable('approval_status')" class="<?php echo $sortField === 'approval_status' ? 'sorted' : ''; ?>">
-                                        Approval <span class="sort-icon"><?php echo $sortField === 'approval_status' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
-                                    </th>
+                                    <th>3-Way Match</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <?php if (!empty($paginatedPos)): ?>
-                                    <?php foreach ($paginatedPos as $po): ?>
+                                    <?php foreach ($paginatedPos as $po): 
+                                        $currSym = getCurrencySymbol($po['currency'] ?? 'PHP');
+                                        $subtotalVal = $po['subtotal'] ?? round($po['total_amount'] / 1.12, 2);
+                                        $taxVal = $po['tax_amount'] ?? round($po['total_amount'] - $subtotalVal, 2);
+                                        $fulfillment = $po['fulfillment_status'] ?? ($po['status'] === 'received' || $po['status'] === 'completed' ? 'fulfilled' : ($po['status'] === 'shipped' ? 'partial' : ($po['status'] === 'cancelled' ? 'canceled' : 'issued')));
+                                        $matchStatus = $po['three_way_matching_status'] ?? 'pending';
+                                    ?>
                                     <tr>
                                         <td class="checkbox-cell">
                                             <input type="checkbox" name="ids[]" value="<?php echo $po['id']; ?>" 
                                                    class="row-checkbox" onchange="updateSelection();">
                                         </td>
-                                        <td><strong><?php echo htmlspecialchars($po['po_number']); ?></strong></td>
-                                        <td><?php echo htmlspecialchars($po['company_name'] ?? 'N/A'); ?></td>
-                                        <td><?php echo date('M d, Y', strtotime($po['order_date'])); ?></td>
-                                        <td class="po-total">₱<?php echo number_format($po['total_amount'], 2); ?></td>
-                                        <td><?php echo htmlspecialchars(ucwords(str_replace('_', ' ', $po['payment_method'] ?? 'not recorded'))); ?></td>
                                         <td>
-                                            <span class="status-badge po-<?php echo $po['status']; ?>">
-                                                <?php echo ucfirst($po['status']); ?>
+                                            <strong><?php echo htmlspecialchars($po['po_number']); ?></strong>
+                                            <div style="font-size: 11px; color: var(--secondary-text);"><?php echo htmlspecialchars($po['currency'] ?? 'PHP'); ?></div>
+                                        </td>
+                                        <td>
+                                            <strong><?php echo htmlspecialchars($po['company_name'] ?? 'N/A'); ?></strong>
+                                            <?php if (!empty($po['supplier_code'])): ?>
+                                                <div style="font-size: 11px; color: var(--secondary-text);"><?php echo htmlspecialchars($po['supplier_code']); ?></div>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td><?php echo date('M d, Y', strtotime($po['issue_date'] ?? $po['order_date'])); ?></td>
+                                        <td>
+                                            <span class="badge" style="background: rgba(47, 128, 237, 0.1); color: var(--primary); font-weight: 600; padding: 2px 8px; border-radius: 4px; font-size: 11px;">
+                                                <i class="fas fa-boxes" style="margin-right: 3px;"></i><?php echo (int)($po['line_item_count'] ?? 1); ?> items
+                                            </span>
+                                        </td>
+                                        <td style="font-size: 13px;"><?php echo $currSym . number_format($subtotalVal, 2); ?></td>
+                                        <td style="font-size: 13px; color: var(--secondary-text);"><?php echo $currSym . number_format($taxVal, 2); ?></td>
+                                        <td class="po-total" style="font-weight: 700;">
+                                            <?php echo $currSym . number_format($po['total_amount'], 2); ?>
+                                        </td>
+                                        <td>
+                                            <span class="status-badge" style="<?php 
+                                                echo $fulfillment === 'fulfilled' ? 'background: rgba(39, 174, 96, 0.15); color: #27AE60;' : 
+                                                    ($fulfillment === 'partial' ? 'background: rgba(245, 158, 11, 0.15); color: #F59E0B;' : 
+                                                    ($fulfillment === 'canceled' ? 'background: rgba(220, 38, 38, 0.15); color: #DC2626;' : 'background: rgba(47, 128, 237, 0.15); color: #2F80ED;')); 
+                                            ?> font-size: 11px; font-weight: 600;">
+                                                <i class="fas fa-<?php echo $fulfillment === 'fulfilled' ? 'check-double' : ($fulfillment === 'partial' ? 'hourglass-half' : ($fulfillment === 'canceled' ? 'ban' : 'paper-plane')); ?>"></i>
+                                                <?php echo ucfirst($fulfillment); ?>
                                             </span>
                                         </td>
                                         <td>
-                                            <span class="approval-badge approval-<?php echo $po['approval_status'] ?? 'pending_review'; ?>">
-                                                <?php if ($po['approval_status'] === 'approved'): ?>
-                                                    <i class="fas fa-check-circle"></i>
-                                                <?php elseif ($po['approval_status'] === 'rejected'): ?>
-                                                    <i class="fas fa-times-circle"></i>
-                                                <?php elseif ($po['approval_status'] === 'revision_requested'): ?>
-                                                    <i class="fas fa-edit"></i>
-                                                <?php else: ?>
-                                                    <i class="fas fa-clock"></i>
-                                                <?php endif; ?>
-                                                <?php echo ucfirst(str_replace('_', ' ', $po['approval_status'] ?? 'pending_review')); ?>
+                                            <span class="status-badge" style="<?php
+                                                echo $matchStatus === 'matched' ? 'background: rgba(39, 174, 96, 0.15); color: #27AE60;' : 
+                                                    ($matchStatus === 'discrepancy' ? 'background: rgba(220, 38, 38, 0.15); color: #DC2626;' : 'background: rgba(107, 114, 128, 0.15); color: #6B7280;');
+                                            ?> font-size: 11px; font-weight: 600;">
+                                                <i class="fas fa-<?php echo $matchStatus === 'matched' ? 'link' : ($matchStatus === 'discrepancy' ? 'exclamation-triangle' : 'clock'); ?>"></i>
+                                                <?php echo ucfirst($matchStatus); ?>
                                             </span>
                                         </td>
                                         <td>
@@ -1528,6 +1593,19 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                                                    class="btn btn-primary btn-sm" title="View Details">
                                                     <i class="fas fa-eye"></i>
                                                 </a>
+                                                <button onclick="openThreeWayModal(<?php echo htmlspecialchars(json_encode([
+                                                    'id' => $po['id'],
+                                                    'po_number' => $po['po_number'],
+                                                    'supplier' => $po['company_name'] ?? 'N/A',
+                                                    'total_amount' => $currSym . number_format($po['total_amount'], 2),
+                                                    'delivery_receipt_ref' => $po['delivery_receipt_ref'] ?? '',
+                                                    'vendor_invoice_ref' => $po['vendor_invoice_ref'] ?? '',
+                                                    'three_way_matching_status' => $po['three_way_matching_status'] ?? 'pending',
+                                                    'fulfillment_status' => $fulfillment,
+                                                    'three_way_matching_notes' => $po['three_way_matching_notes'] ?? ''
+                                                ]), ENT_QUOTES); ?>)" class="btn btn-outline btn-sm" title="3-Way Matching (PO vs DR vs Invoice)" style="color: #2F80ED;">
+                                                    <i class="fas fa-balance-scale"></i>
+                                                </button>
                                                 <?php if (!$showArchived && in_array($po['status'], ['approved', 'shipped'], true)): ?>
                                                 <a href="purchase-orders.php?action=receive&id=<?php echo (int)$po['id']; ?>"
                                                    class="btn btn-success btn-sm" title="Record receipt">
@@ -1834,14 +1912,26 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
                     </select>
                 </div>
 
-                <div class="form-group">
-                    <label>Payment Method *</label>
-                    <select name="payment_method" id="poPaymentMethod" required onchange="handlePaymentMethodChange(this.value)">
-                        <option value="">Choose a payment method</option>
-                        <option value="cash">Cash</option>
-                        <option value="digital_cash">Digital Cash</option>
-                        <option value="credit">Credits</option>
-                    </select>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div class="form-group">
+                        <label>Payment Method *</label>
+                        <select name="payment_method" id="poPaymentMethod" required onchange="handlePaymentMethodChange(this.value)">
+                            <option value="">Choose a payment method</option>
+                            <option value="cash">Cash</option>
+                            <option value="digital_cash">Digital Cash</option>
+                            <option value="credit">Credits</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Currency *</label>
+                        <select name="currency" required>
+                            <option value="PHP">PHP (₱ - Philippine Peso)</option>
+                            <option value="USD">USD ($ - US Dollar)</option>
+                            <option value="EUR">EUR (€ - Euro)</option>
+                            <option value="JPY">JPY (¥ - Japanese Yen)</option>
+                            <option value="SGD">SGD (S$ - Singapore Dollar)</option>
+                        </select>
+                    </div>
                 </div>
 
                 <!-- Dynamic QR Code Container for Digital Cash / Credit Payment -->
@@ -1948,10 +2038,94 @@ $paginatedPos = array_slice($pos, $offset, $itemsPerPage);
         </div>
     </div>
     
+    <!-- 3-Way Matching Modal (PO vs Delivery Receipt vs Vendor Invoice) -->
+    <div id="threeWayModal" class="modal-overlay" style="display: none;">
+        <div class="modal" style="max-width: 600px;">
+            <h3>
+                <i class="fas fa-balance-scale" style="color: var(--primary);"></i> 3-Way Matching Audit
+                <button type="button" class="close-modal" onclick="closeThreeWayModal()">&times;</button>
+            </h3>
+            <p style="font-size: 13px; color: var(--secondary-text); margin-bottom: 16px;">
+                Reconcile Purchase Order with the physical Delivery Receipt and Supplier/Vendor Invoice before release of payment.
+            </p>
+            <form method="POST" action="purchase-orders.php?action=three_way_match">
+                <input type="hidden" name="id" id="threeWayPoId">
+                <div style="background: var(--bg); border-radius: 8px; padding: 12px; margin-bottom: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                    <div>
+                        <div style="font-size: 11px; color: var(--secondary-text);">PO Number</div>
+                        <div id="threeWayPoNumber" style="font-weight: 600;"></div>
+                    </div>
+                    <div>
+                        <div style="font-size: 11px; color: var(--secondary-text);">PO Total Amount</div>
+                        <div id="threeWayPoTotal" style="font-weight: 700; color: var(--primary);"></div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>1. Delivery Receipt Reference / Waybill #</label>
+                    <input type="text" name="delivery_receipt_ref" id="threeWayDrRef" placeholder="e.g., DR-2026-8819 or Waybill #" required>
+                </div>
+
+                <div class="form-group">
+                    <label>2. Vendor Invoice Reference #</label>
+                    <input type="text" name="vendor_invoice_ref" id="threeWayInvoiceRef" placeholder="e.g., INV-99021-X" required>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div class="form-group">
+                        <label>3-Way Matching Status</label>
+                        <select name="matching_status" id="threeWayStatus" required>
+                            <option value="matched">Matched (100% Consistent)</option>
+                            <option value="discrepancy">Discrepancy (Qty / Price Variance)</option>
+                            <option value="pending">Pending Document Verification</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Order Fulfillment Status</label>
+                        <select name="fulfillment_status" id="threeWayFulfillment" required>
+                            <option value="fulfilled">Fulfilled</option>
+                            <option value="partial">Partial</option>
+                            <option value="issued">Issued</option>
+                            <option value="canceled">Canceled</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Reconciliation Audit Notes</label>
+                    <textarea name="matching_notes" id="threeWayNotes" rows="2" placeholder="Record verification remarks, unit price match, or discrepancy items..."></textarea>
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" onclick="closeThreeWayModal()" class="btn btn-outline">Cancel</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-check-circle"></i> Save 3-Way Match
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
     <script>
         // ============================================
         // MODAL FUNCTIONS
         // ============================================
+        function openThreeWayModal(po) {
+            document.getElementById('threeWayPoId').value = po.id;
+            document.getElementById('threeWayPoNumber').innerText = po.po_number + ' (' + (po.supplier || 'N/A') + ')';
+            document.getElementById('threeWayPoTotal').innerText = po.total_amount;
+            document.getElementById('threeWayDrRef').value = po.delivery_receipt_ref || '';
+            document.getElementById('threeWayInvoiceRef').value = po.vendor_invoice_ref || '';
+            document.getElementById('threeWayStatus').value = po.three_way_matching_status || 'pending';
+            document.getElementById('threeWayFulfillment').value = po.fulfillment_status || 'partial';
+            document.getElementById('threeWayNotes').value = po.three_way_matching_notes || '';
+            document.getElementById('threeWayModal').style.display = 'flex';
+        }
+
+        function closeThreeWayModal() {
+            document.getElementById('threeWayModal').style.display = 'none';
+        }
+
         function openCreateModal() {
             var modal = document.getElementById('createModal');
             if (modal) {

@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // admin/warehouse-zones.php
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
@@ -98,6 +98,72 @@ if (isset($_GET['delete']) && isset($_GET['id'])) {
     }
 }
 
+// Handle Bin creation
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'create_bin') {
+    $warehouse_id = (int)($_POST['warehouse_id'] ?? 0);
+    $zone_id = !empty($_POST['zone_id']) ? (int)$_POST['zone_id'] : null;
+    $bin_number = trim($_POST['bin_number'] ?? '');
+    $location_name = trim($_POST['location_name'] ?? '');
+    $storage_capacity = (int)($_POST['storage_capacity'] ?? 100);
+    $current_stock_levels = (int)($_POST['current_stock_levels'] ?? 0);
+    $status = $_POST['status'] ?? 'available';
+
+    if (empty($warehouse_id) || empty($bin_number)) {
+        $error = "Warehouse and Bin Number are required.";
+    } else {
+        try {
+            $stmt = $pdo->prepare("INSERT INTO warehouse_bins (warehouse_id, zone_id, bin_number, location_name, storage_capacity, current_stock_levels, status) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$warehouse_id, $zone_id, $bin_number, $location_name, $storage_capacity, $current_stock_levels, $status]);
+            logAudit($_SESSION['user_id'], 'create_bin', 'warehouse', "Created storage bin: $bin_number");
+            $_SESSION['success'] = "Bin $bin_number created successfully!";
+            header('Location: warehouse-zones.php?view=bins&warehouse_id=' . $warehouse_id);
+            exit();
+        } catch (Throwable $e) {
+            $error = "Error creating bin: " . $e->getMessage();
+        }
+    }
+}
+
+// Handle Bin update
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'edit_bin') {
+    $bin_id = (int)($_POST['bin_id'] ?? 0);
+    $warehouse_id = (int)($_POST['warehouse_id'] ?? 0);
+    $zone_id = !empty($_POST['zone_id']) ? (int)$_POST['zone_id'] : null;
+    $bin_number = trim($_POST['bin_number'] ?? '');
+    $location_name = trim($_POST['location_name'] ?? '');
+    $storage_capacity = (int)($_POST['storage_capacity'] ?? 100);
+    $current_stock_levels = (int)($_POST['current_stock_levels'] ?? 0);
+    $status = $_POST['status'] ?? 'available';
+
+    try {
+        $stmt = $pdo->prepare("UPDATE warehouse_bins SET warehouse_id = ?, zone_id = ?, bin_number = ?, location_name = ?, storage_capacity = ?, current_stock_levels = ?, status = ? WHERE id = ?");
+        $stmt->execute([$warehouse_id, $zone_id, $bin_number, $location_name, $storage_capacity, $current_stock_levels, $status, $bin_id]);
+        logAudit($_SESSION['user_id'], 'update_bin', 'warehouse', "Updated storage bin: $bin_number");
+        $_SESSION['success'] = "Bin $bin_number updated successfully!";
+        header('Location: warehouse-zones.php?view=bins&warehouse_id=' . $warehouse_id);
+        exit();
+    } catch (Throwable $e) {
+        $error = "Error updating bin: " . $e->getMessage();
+    }
+}
+
+// Handle Bin deletion
+if (isset($_GET['delete_bin']) && isset($_GET['id'])) {
+    $bin_id = (int)$_GET['id'];
+    try {
+        $stmt = $pdo->prepare("DELETE FROM warehouse_bins WHERE id = ?");
+        $stmt->execute([$bin_id]);
+        logAudit($_SESSION['user_id'], 'delete_bin', 'warehouse', "Deleted bin ID: $bin_id");
+        $_SESSION['success'] = "Bin deleted successfully!";
+        header('Location: warehouse-zones.php?view=bins');
+        exit();
+    } catch (Throwable $e) {
+        $_SESSION['error'] = "Error deleting bin: " . $e->getMessage();
+        header('Location: warehouse-zones.php?view=bins');
+        exit();
+    }
+}
+
 // Get zone for edit
 $editZone = null;
 if (isset($_GET['edit']) && isset($_GET['id'])) {
@@ -109,6 +175,39 @@ if (isset($_GET['edit']) && isset($_GET['id'])) {
         $error = "Error fetching zone: " . $e->getMessage();
     }
 }
+
+// Get bin for edit
+$editBin = null;
+if (isset($_GET['edit_bin']) && isset($_GET['id'])) {
+    try {
+        $stmt = $pdo->prepare("SELECT * FROM warehouse_bins WHERE id = ?");
+        $stmt->execute([$_GET['id']]);
+        $editBin = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        $error = "Error fetching bin: " . $e->getMessage();
+    }
+}
+
+// Auto-seed initial travel & tours sample bins if table is empty
+try {
+    $binCountCheck = (int)$pdo->query("SELECT COUNT(*) FROM warehouse_bins")->fetchColumn();
+    if ($binCountCheck === 0 && !empty($warehouses)) {
+        $firstWhId = (int)$warehouses[0]['id'];
+        $sampleBins = [
+            ['BIN-MKT-01', 'Rack A - Shelf 1 (Marketing Kits & Flyers)', 250, 45, 'available'],
+            ['BIN-UNI-02', 'Rack B - Tier 2 (Staff Uniforms & Raincoats)', 300, 120, 'available'],
+            ['BIN-PRT-03', 'Bay C - Bin 14 (Vehicle Spare Parts & Filters)', 150, 38, 'available'],
+            ['BIN-EMG-04', 'Secure Locker 1 (First Aid & Emergency Flares)', 100, 25, 'available'],
+            ['BIN-MCH-05', 'Display Rack 4 (Tour Merchandise & Bags)', 200, 80, 'available'],
+        ];
+        $seedStmt = $pdo->prepare("INSERT INTO warehouse_bins (warehouse_id, bin_number, location_name, storage_capacity, current_stock_levels, status) VALUES (?, ?, ?, ?, ?, ?)");
+        foreach ($sampleBins as $sb) {
+            $seedStmt->execute([$firstWhId, $sb[0], $sb[1], $sb[2], $sb[3], $sb[4]]);
+        }
+    }
+} catch (Throwable $ignore) {}
+
+$activeTab = $_GET['view'] ?? (isset($_GET['edit_bin']) ? 'bins' : 'zones');
 
 // Get zones with warehouse info
 try {
@@ -130,8 +229,25 @@ try {
     $zones = [];
 }
 
+// Get bins with warehouse info
+try {
+    $binQuery = "SELECT b.*, w.name AS warehouse_name, w.warehouse_code, wz.zone_name, wz.zone_code
+                 FROM warehouse_bins b
+                 JOIN warehouses w ON b.warehouse_id = w.id
+                 LEFT JOIN warehouse_zones wz ON b.zone_id = wz.id
+                 WHERE w.is_archived = 0";
+    if (isset($_GET['warehouse_id']) && !empty($_GET['warehouse_id'])) {
+        $binQuery .= " AND b.warehouse_id = " . (int)$_GET['warehouse_id'];
+    }
+    $binQuery .= " ORDER BY w.name, b.bin_number";
+    $bins = $pdo->query($binQuery)->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    $bins = [];
+}
+
 // Get stats
 $totalZones = count($zones);
+$totalBins = count($bins);
 $hazmatCount = 0;
 $coldCount = 0;
 foreach ($zones as $z) {
@@ -1184,18 +1300,24 @@ foreach ($zones as $z) {
         <main class="main-content">
             <div class="top-bar">
                 <div class="page-title">
-                    <h1>Zone Management</h1>
-                    <p>Manage warehouse zones and storage areas</p>
+                    <h1><i class="fas fa-boxes-stacked" style="color: var(--primary);"></i> Smart Warehousing System (SWS)</h1>
+                    <p>Multi-location warehouse/bin tracking, stock intake/dispatch logging, QR/barcode scanning, and movement history</p>
                 </div>
                 <div class="top-bar-actions">
-                    <button class="btn btn-primary" onclick="openCreateModal()">
-                        <i class="fas fa-plus"></i> Add Zone
+                    <button class="btn btn-primary" onclick="openCreateBinModal()" style="background: #2563EB; border-color: #2563EB;">
+                        <i class="fas fa-box-open"></i> Add Storage Bin
                     </button>
-                    <a href="warehouses.php" class="btn btn-back">
-                        <i class="fas fa-arrow-left"></i> Back to Warehouses
+                    <button class="btn btn-outline" onclick="openCreateModal()">
+                        <i class="fas fa-layer-group"></i> Add Zone
+                    </button>
+                    <button class="btn btn-outline" onclick="openBarcodeScannerModal()">
+                        <i class="fas fa-qrcode"></i> Scan QR / Barcode
+                    </button>
+                    <a href="stock-movements.php" class="btn btn-outline" title="Stock intake/dispatch logging">
+                        <i class="fas fa-exchange-alt"></i> Movement History
                     </a>
-                    <a href="dashboard.php" class="btn btn-back">
-                        <i class="fas fa-home"></i> Dashboard
+                    <a href="warehouses.php" class="btn btn-back">
+                        <i class="fas fa-warehouse"></i> Warehouses
                     </a>
                 </div>
             </div>
@@ -1218,40 +1340,59 @@ foreach ($zones as $z) {
                 </div>
             <?php endif; ?>
             
-            <!-- Stats -->
+            <!-- SWS Core Stats -->
             <div class="stats-grid">
                 <div class="stat-card">
-                    <div class="label"><i class="fas fa-layer-group"></i> Total Zones</div>
-                    <div class="value"><?php echo number_format($totalZones); ?></div>
+                    <div class="label"><i class="fas fa-cubes"></i> Total Storage Bins</div>
+                    <div class="value"><?php echo number_format($totalBins); ?></div>
+                    <div style="font-size:12px; color:var(--secondary-text); margin-top:4px;">Multi-location bin locations</div>
+                </div>
+                <div class="stat-card" style="border-color: #2563EB;">
+                    <div class="label"><i class="fas fa-layer-group" style="color: #2563EB;"></i> Warehouse Zones</div>
+                    <div class="value" style="color: #2563EB;"><?php echo number_format($totalZones); ?></div>
+                    <div style="font-size:12px; color:var(--secondary-text); margin-top:4px;">Staging, Bulk &amp; Specialty</div>
                 </div>
                 <div class="stat-card" style="border-color: #DC2626;">
-                    <div class="label"><i class="fas fa-exclamation-triangle" style="color: #DC2626;"></i> Hazmat Zones</div>
-                    <div class="value" style="color: #DC2626;"><?php echo number_format($hazmatCount); ?></div>
-                </div>
-                <div class="stat-card" style="border-color: #1E40AF;">
-                    <div class="label"><i class="fas fa-snowflake" style="color: #1E40AF;"></i> Cold Chain Zones</div>
-                    <div class="value" style="color: #1E40AF;"><?php echo number_format($coldCount); ?></div>
+                    <div class="label"><i class="fas fa-exclamation-triangle" style="color: #DC2626;"></i> Hazmat &amp; Cold Chain</div>
+                    <div class="value" style="color: #DC2626;"><?php echo number_format($hazmatCount + $coldCount); ?></div>
+                    <div style="font-size:12px; color:var(--secondary-text); margin-top:4px;">Controlled climate/hazard</div>
                 </div>
                 <div class="stat-card" style="border-color: var(--accent);">
-                    <div class="label"><i class="fas fa-warehouse" style="color: var(--accent);"></i> Warehouses</div>
+                    <div class="label"><i class="fas fa-warehouse" style="color: var(--accent);"></i> Active Warehouses</div>
                     <div class="value" style="color: var(--accent);"><?php echo count($warehouses); ?></div>
+                    <div style="font-size:12px; color:var(--secondary-text); margin-top:4px;">Distribution network</div>
                 </div>
+            </div>
+
+            <!-- View Switcher Tabs -->
+            <div style="display:flex; gap:12px; margin-bottom: 20px; border-bottom: 2px solid var(--border); padding-bottom: 1px;">
+                <a href="warehouse-zones.php?view=bins<?php echo isset($_GET['warehouse_id']) ? '&warehouse_id=' . (int)$_GET['warehouse_id'] : ''; ?>" 
+                   style="padding: 10px 20px; font-weight: 600; font-size: 14px; text-decoration: none; border-bottom: 3px solid <?php echo $activeTab === 'bins' ? 'var(--primary)' : 'transparent'; ?>; color: <?php echo $activeTab === 'bins' ? 'var(--primary)' : 'var(--secondary-text)'; ?>; display:flex; align-items:center; gap:8px;">
+                    <i class="fas fa-cubes"></i> Bin Tracking (SWS)
+                    <span class="badge" style="background: <?php echo $activeTab === 'bins' ? 'var(--primary)' : '#9CA3AF'; ?>; color:#fff; font-size:11px;"><?php echo $totalBins; ?></span>
+                </a>
+                <a href="warehouse-zones.php?view=zones<?php echo isset($_GET['warehouse_id']) ? '&warehouse_id=' . (int)$_GET['warehouse_id'] : ''; ?>" 
+                   style="padding: 10px 20px; font-weight: 600; font-size: 14px; text-decoration: none; border-bottom: 3px solid <?php echo $activeTab === 'zones' ? 'var(--primary)' : 'transparent'; ?>; color: <?php echo $activeTab === 'zones' ? 'var(--primary)' : 'var(--secondary-text)'; ?>; display:flex; align-items:center; gap:8px;">
+                    <i class="fas fa-layer-group"></i> Warehouse Zones
+                    <span class="badge" style="background: <?php echo $activeTab === 'zones' ? 'var(--primary)' : '#9CA3AF'; ?>; color:#fff; font-size:11px;"><?php echo $totalZones; ?></span>
+                </a>
             </div>
             
             <!-- Filter Bar -->
             <?php if (!empty($warehouses)): ?>
             <div class="filter-bar">
                 <form method="GET" style="display: flex; gap: 12px; flex-wrap: wrap; width: 100%; align-items: center;">
+                    <input type="hidden" name="view" value="<?php echo htmlspecialchars($activeTab); ?>">
                     <select name="warehouse_id" onchange="this.form.submit()">
                         <option value="">All Warehouses</option>
                         <?php foreach ($warehouses as $w): ?>
                         <option value="<?php echo $w['id']; ?>" <?php echo (isset($_GET['warehouse_id']) && $_GET['warehouse_id'] == $w['id']) ? 'selected' : ''; ?>>
-                            <?php echo htmlspecialchars($w['name']); ?>
+                            <?php echo htmlspecialchars($w['name']); ?> (<?php echo htmlspecialchars($w['warehouse_code']); ?>)
                         </option>
                         <?php endforeach; ?>
                     </select>
                     <?php if (isset($_GET['warehouse_id']) && !empty($_GET['warehouse_id'])): ?>
-                    <a href="warehouse-zones.php" class="btn btn-outline">
+                    <a href="warehouse-zones.php?view=<?php echo htmlspecialchars($activeTab); ?>" class="btn btn-outline">
                         <i class="fas fa-times"></i> Clear Filter
                     </a>
                     <?php endif; ?>
@@ -1259,9 +1400,125 @@ foreach ($zones as $z) {
             </div>
             <?php endif; ?>
             
+            <?php if ($activeTab === 'bins'): ?>
+            <!-- ============================================
+                 STORAGE BINS TABLE (SWS REQUIREMENT)
+                 Key Fields: Warehouse_ID, Location_Name, Bin_Number, Current_Stock_Levels, Storage_Capacity
+                 ============================================ -->
             <div class="table-container">
                 <div class="table-header">
-                    <h2>Warehouse Zones</h2>
+                    <h2><i class="fas fa-cubes" style="color:var(--primary); margin-right:8px;"></i> Storage Bins &amp; Multi-Location Tracking</h2>
+                    <span class="role-badge"><?php echo count($bins); ?> active bins</span>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Warehouse_ID</th>
+                                <th>Bin_Number</th>
+                                <th>Location_Name</th>
+                                <th>Current_Stock_Levels</th>
+                                <th>Storage_Capacity</th>
+                                <th>Utilization</th>
+                                <th>Status</th>
+                                <th>QR / Barcode</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php if (!empty($bins)): ?>
+                                <?php foreach ($bins as $bin): 
+                                    $cap = max(1, (int)$bin['storage_capacity']);
+                                    $cur = (int)$bin['current_stock_levels'];
+                                    $pct = min(100, round(($cur / $cap) * 100));
+                                    $barColor = $pct >= 90 ? '#DC2626' : ($pct >= 70 ? '#F59E0B' : '#10B981');
+                                ?>
+                                <tr>
+                                    <td>
+                                        <strong><?php echo htmlspecialchars($bin['warehouse_code'] ?? 'WH'); ?></strong>
+                                        <div style="font-size:11px; color:var(--secondary-text);"><?php echo htmlspecialchars($bin['warehouse_name']); ?></div>
+                                    </td>
+                                    <td>
+                                        <span style="font-family:monospace; font-weight:700; color:var(--primary); background:rgba(47,128,237,0.08); padding:3px 8px; border-radius:6px;">
+                                            <?php echo htmlspecialchars($bin['bin_number']); ?>
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <strong><?php echo htmlspecialchars($bin['location_name'] ?? 'General Bin'); ?></strong>
+                                        <?php if (!empty($bin['zone_name'])): ?>
+                                            <div style="font-size:11px; color:var(--secondary-text);">Zone: <?php echo htmlspecialchars($bin['zone_name']); ?></div>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <strong style="font-size:15px; color:var(--text);"><?php echo number_format($cur); ?></strong>
+                                        <span style="font-size:11px; color:var(--secondary-text);">units</span>
+                                    </td>
+                                    <td>
+                                        <strong><?php echo number_format($cap); ?></strong>
+                                        <span style="font-size:11px; color:var(--secondary-text);">units max</span>
+                                    </td>
+                                    <td>
+                                        <div style="display:flex; align-items:center; gap:8px;">
+                                            <div style="flex:1; height:8px; background:rgba(0,0,0,0.06); border-radius:4px; overflow:hidden; min-width:60px;">
+                                                <div style="width:<?php echo $pct; ?>%; height:100%; background:<?php echo $barColor; ?>; border-radius:4px;"></div>
+                                            </div>
+                                            <span style="font-size:11px; font-weight:600; color:<?php echo $barColor; ?>;"><?php echo $pct; ?>%</span>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <span class="status-badge <?php echo $bin['status'] === 'available' ? 'status-active' : ($bin['status'] === 'full' ? 'status-inactive' : 'status-maintenance'); ?>">
+                                            <?php echo ucfirst($bin['status'] ?? 'Available'); ?>
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <button type="button" class="btn btn-outline btn-sm" onclick="showBinBarcode('<?php echo htmlspecialchars($bin['bin_number'], ENT_QUOTES); ?>', '<?php echo htmlspecialchars($bin['location_name'] ?? '', ENT_QUOTES); ?>')" title="View Barcode &amp; QR Code">
+                                            <i class="fas fa-qrcode"></i> QR / Barcode
+                                        </button>
+                                    </td>
+                                    <td>
+                                        <div class="action-buttons">
+                                            <a href="warehouse-zones.php?edit_bin=1&id=<?php echo $bin['id']; ?>&view=bins" 
+                                               class="btn btn-primary btn-sm" title="Edit Bin">
+                                                <i class="fas fa-edit"></i>
+                                            </a>
+                                            <a href="stock-movements.php?warehouse_id=<?php echo $bin['warehouse_id']; ?>" 
+                                               class="btn btn-outline btn-sm" title="Log Intake / Dispatch">
+                                                <i class="fas fa-exchange-alt"></i>
+                                            </a>
+                                            <a href="warehouse-zones.php?delete_bin=1&id=<?php echo $bin['id']; ?>" 
+                                               class="btn btn-danger btn-sm" 
+                                               onclick="return confirm('Delete bin <?php echo htmlspecialchars($bin['bin_number']); ?>?');" title="Delete Bin">
+                                                <i class="fas fa-trash"></i>
+                                            </a>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <tr>
+                                    <td colspan="9" class="empty-state">
+                                        <i class="fas fa-cubes"></i>
+                                        <p>No storage bins configured yet.</p>
+                                        <p style="margin-top:8px;">
+                                            <a href="#" onclick="openCreateBinModal();" style="color:var(--primary); font-weight:500;">
+                                                <i class="fas fa-plus"></i> Add your first warehouse bin
+                                            </a>
+                                        </p>
+                                    </td>
+                                </tr>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <?php else: ?>
+            <!-- ============================================
+                 WAREHOUSE ZONES TABLE
+                 ============================================ -->
+            <div class="table-container">
+                <div class="table-header">
+                    <h2><i class="fas fa-layer-group" style="color:var(--primary); margin-right:8px;"></i> Warehouse Zones</h2>
                     <span class="role-badge"><?php echo count($zones); ?> zones</span>
                 </div>
                 <div class="table-wrapper">
@@ -1318,11 +1575,11 @@ foreach ($zones as $z) {
                                     </td>
                                     <td>
                                         <div class="action-buttons">
-                                            <a href="warehouse-zones.php?edit=1&id=<?php echo $zone['id']; ?>" 
+                                            <a href="warehouse-zones.php?edit=1&id=<?php echo $zone['id']; ?>&view=zones" 
                                                class="btn btn-primary btn-sm" title="Edit Zone">
                                                 <i class="fas fa-edit"></i>
                                             </a>
-                                            <a href="warehouse-zones.php?delete=1&id=<?php echo $zone['id']; ?>" 
+                                            <a href="warehouse-zones.php?delete=1&id=<?php echo $zone['id']; ?>&view=zones" 
                                                class="btn btn-danger btn-sm" 
                                                onclick="return confirm('Delete this zone?');" title="Delete Zone">
                                                 <i class="fas fa-trash"></i>
@@ -1355,6 +1612,7 @@ foreach ($zones as $z) {
                     </table>
                 </div>
             </div>
+            <?php endif; ?>
         </main>
     </div>
     
@@ -1439,92 +1697,317 @@ foreach ($zones as $z) {
                 </div>
                 
                 <div class="form-actions">
-                    <button type="button" onclick="closeZoneModal()" class="btn btn-outline">Cancel</button>
-                    <button type="submit" class="btn btn-primary">
-                        <i class="fas fa-save"></i> <?php echo $editZone ? 'Update' : 'Create'; ?>
+    <!-- Create/Edit Bin Modal (SWS) -->
+    <div id="binModal" class="modal-overlay" style="display: <?php echo ($editBin) ? 'flex' : 'none'; ?>;">
+        <div class="modal">
+            <h3>
+                <i class="fas fa-<?php echo $editBin ? 'edit' : 'plus'; ?>" style="color: var(--primary);"></i>
+                <?php echo $editBin ? 'Edit Storage Bin' : 'Add New Storage Bin (SWS)'; ?>
+                <button type="button" class="close-modal" onclick="closeBinModal()">&times;</button>
+            </h3>
+            <form method="POST" action="warehouse-zones.php">
+                <input type="hidden" name="action" value="<?php echo $editBin ? 'edit_bin' : 'create_bin'; ?>">
+                <?php if ($editBin): ?>
+                <input type="hidden" name="bin_id" value="<?php echo $editBin['id']; ?>">
+                <?php endif; ?>
+                
+                <div class="form-group">
+                    <label>Warehouse *</label>
+                    <select name="warehouse_id" required>
+                        <option value="">Select Warehouse</option>
+                        <?php foreach ($warehouses as $w): ?>
+                        <option value="<?php echo $w['id']; ?>" <?php echo ($editBin && $editBin['warehouse_id'] == $w['id']) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($w['name']); ?> (<?php echo htmlspecialchars($w['warehouse_code']); ?>)
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Zone (Optional)</label>
+                    <select name="zone_id">
+                        <option value="">No Specific Zone</option>
+                        <?php foreach ($zones as $z): ?>
+                        <option value="<?php echo $z['id']; ?>" <?php echo ($editBin && $editBin['zone_id'] == $z['id']) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($z['zone_name']); ?> (<?php echo htmlspecialchars($z['zone_code']); ?>)
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>Bin Number *</label>
+                    <input type="text" name="bin_number" required 
+                           value="<?php echo $editBin ? htmlspecialchars($editBin['bin_number']) : 'BIN-' . strtoupper(substr(uniqid(), -6)); ?>"
+                           placeholder="e.g., BIN-A101, BIN-MKT-01">
+                </div>
+                
+                <div class="form-group">
+                    <label>Location Name / Description *</label>
+                    <input type="text" name="location_name" required 
+                           value="<?php echo $editBin ? htmlspecialchars($editBin['location_name']) : ''; ?>"
+                           placeholder="e.g., Rack A - Shelf 2 (Tour Marketing Kits)">
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+                    <div class="form-group">
+                        <label>Storage Capacity (units) *</label>
+                        <input type="number" name="storage_capacity" min="1" required
+                               value="<?php echo $editBin ? (int)$editBin['storage_capacity'] : '150'; ?>"
+                               placeholder="e.g., 150">
+                    </div>
+                    <div class="form-group">
+                        <label>Current Stock Levels</label>
+                        <input type="number" name="current_stock_levels" min="0"
+                               value="<?php echo $editBin ? (int)$editBin['current_stock_levels'] : '0'; ?>"
+                               placeholder="e.g., 25">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Bin Status</label>
+                    <select name="status">
+                        <option value="available" <?php echo ($editBin && $editBin['status'] === 'available') ? 'selected' : ''; ?>>Available</option>
+                        <option value="full" <?php echo ($editBin && $editBin['status'] === 'full') ? 'selected' : ''; ?>>Full</option>
+                        <option value="reserved" <?php echo ($editBin && $editBin['status'] === 'reserved') ? 'selected' : ''; ?>>Reserved</option>
+                        <option value="maintenance" <?php echo ($editBin && $editBin['status'] === 'maintenance') ? 'selected' : ''; ?>>Under Maintenance</option>
+                    </select>
+                </div>
+                
+                <div class="form-actions">
+                    <button type="button" onclick="closeBinModal()" class="btn btn-outline">Cancel</button>
+                    <button type="submit" class="btn btn-primary" style="background:#2563EB; border-color:#2563EB;">
+                        <i class="fas fa-save"></i> <?php echo $editBin ? 'Update Bin' : 'Save Bin'; ?>
                     </button>
                 </div>
             </form>
         </div>
     </div>
+
+    <!-- QR & Barcode Preview Modal -->
+    <div id="barcodeModal" class="modal-overlay" style="display:none;">
+        <div class="modal" style="max-width: 420px; text-align: center;">
+            <h3 style="justify-content: center; position: relative;">
+                <i class="fas fa-qrcode" style="color: var(--primary);"></i> Storage Bin QR &amp; Barcode
+                <button type="button" class="close-modal" onclick="closeBarcodeModal()" style="position: absolute; right: 0;">&times;</button>
+            </h3>
+            <div id="barcodePrintArea" style="background: #ffffff; padding: 24px; border: 1.5px dashed var(--border); border-radius: 12px; margin: 16px 0;">
+                <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #6B7280; margin-bottom: 6px;">Tour-Sphere SWS</div>
+                <h4 id="barcodeBinNum" style="font-size: 22px; font-weight: 800; color: #111827; margin: 0 0 4px 0; font-family: monospace;">BIN-00000</h4>
+                <p id="barcodeBinLoc" style="font-size: 12px; color: #4B5563; margin: 0 0 16px 0;">Rack Location</p>
+                
+                <!-- QR Code Image -->
+                <div style="display: flex; justify-content: center; margin-bottom: 14px;">
+                    <img id="barcodeQrImg" src="" alt="Bin QR Code" style="width: 140px; height: 140px; border-radius: 8px; border: 1px solid #E5E7EB;">
+                </div>
+                
+                <div style="font-size: 10px; color: #9CA3AF; letter-spacing: 0.5px;">SMART WAREHOUSING SYSTEM • BIN IDENTIFIER</div>
+            </div>
+            <div class="form-actions" style="justify-content: center; gap: 10px;">
+                <button type="button" onclick="printBarcodeLabel()" class="btn btn-primary" style="background: #2563EB; border-color: #2563EB;">
+                    <i class="fas fa-print"></i> Print Bin Label
+                </button>
+                <button type="button" onclick="closeBarcodeModal()" class="btn btn-outline">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Barcode Scanner Modal -->
+    <div id="scannerModal" class="modal-overlay" style="display:none;">
+        <div class="modal" style="max-width: 480px;">
+            <h3>
+                <i class="fas fa-barcode" style="color: var(--primary);"></i> QR / Barcode Scanner (SWS)
+                <button type="button" class="close-modal" onclick="closeScannerModal()">&times;</button>
+            </h3>
+            <p style="font-size: 13px; color: var(--secondary-text); margin-bottom: 16px;">
+                Scan a warehouse bin or SKU barcode using your scanner gun or type the code below for rapid lookup.
+            </p>
+            <div class="form-group">
+                <label>Manual Barcode / QR Code Entry</label>
+                <div style="display: flex; gap: 8px;">
+                    <input type="text" id="manualBarcodeInput" placeholder="Scan or type e.g. BIN-MKT-01, SKU-00001" style="flex: 1;" onkeypress="if(event.key==='Enter'){event.preventDefault();processScanLookup();}">
+                    <button type="button" class="btn btn-primary" onclick="processScanLookup()" style="background:#2563EB; border-color:#2563EB;">
+                        <i class="fas fa-search"></i> Find
+                    </button>
+                </div>
+            </div>
+            <div id="scanResult" style="padding: 14px; border-radius: 8px; background: rgba(0,0,0,0.03); border: 1px solid var(--border); font-size: 13px; min-height: 50px; display: flex; align-items: center; justify-content: center; color: var(--secondary-text);">
+                Awaiting scan or input...
+            </div>
+            <div class="form-actions" style="margin-top: 20px;">
+                <button type="button" onclick="closeScannerModal()" class="btn btn-outline">Close</button>
+            </div>
+        </div>
+    </div>
     
     <script>
         // ============================================
-        // CREATE MODAL
+        // CREATE ZONE MODAL
         // ============================================
         function openCreateModal() {
-            // Redirect to same page with edit parameter removed
             var url = new URL(window.location.href);
             url.searchParams.delete('edit');
             url.searchParams.delete('id');
             window.history.replaceState({}, '', url.toString());
             
-            // Show modal
             var modal = document.getElementById('zoneModal');
             modal.style.display = 'flex';
             
-            // Reset form
             var form = modal.querySelector('form');
             if (form) {
                 form.reset();
-                // Remove hidden id field if exists
                 var idField = form.querySelector('input[name="id"]');
                 if (idField) idField.remove();
-                // Set action to create
                 var actionField = form.querySelector('input[name="action"]');
                 if (actionField) actionField.value = 'create';
-                // Update title
                 var title = modal.querySelector('h3');
                 if (title) {
                     title.innerHTML = '<i class="fas fa-plus" style="color: var(--primary);"></i> Add New Zone <button type="button" class="close-modal" onclick="closeZoneModal()">&times;</button>';
                 }
-                // Update submit button
                 var submitBtn = form.querySelector('button[type="submit"]');
                 if (submitBtn) {
-                    submitBtn.innerHTML = '<i class="fas fa-save"></i> Create';
+                    submitBtn.innerHTML = '<i class="fas fa-save"></i> Create Zone';
                 }
-                // Hide temperature group
                 document.getElementById('temperatureGroup').style.display = 'none';
-                // Uncheck cold chain
                 document.getElementById('coldChainCheck').checked = false;
             }
         }
         
         function closeZoneModal() {
             var modal = document.getElementById('zoneModal');
-            modal.style.display = 'none';
-            // Remove edit params from URL
+            if (modal) modal.style.display = 'none';
             var url = new URL(window.location.href);
             url.searchParams.delete('edit');
             url.searchParams.delete('id');
             window.history.replaceState({}, '', url.toString());
         }
-        
-        // Close modal on background click
-        document.addEventListener('DOMContentLoaded', function() {
-            var modal = document.getElementById('zoneModal');
-            if (modal) {
-                modal.addEventListener('click', function(e) {
-                    if (e.target === this) {
-                        closeZoneModal();
-                    }
-                });
-            }
+
+        // ============================================
+        // CREATE / EDIT BIN MODAL
+        // ============================================
+        function openCreateBinModal() {
+            var url = new URL(window.location.href);
+            url.searchParams.delete('edit_bin');
+            url.searchParams.delete('id');
+            window.history.replaceState({}, '', url.toString());
             
-            // Escape key to close
+            var modal = document.getElementById('binModal');
+            modal.style.display = 'flex';
+            
+            var form = modal.querySelector('form');
+            if (form) {
+                form.reset();
+                var idField = form.querySelector('input[name="bin_id"]');
+                if (idField) idField.remove();
+                var actionField = form.querySelector('input[name="action"]');
+                if (actionField) actionField.value = 'create_bin';
+                var binNumInput = form.querySelector('input[name="bin_number"]');
+                if (binNumInput) {
+                    binNumInput.value = 'BIN-' + Math.random().toString(36).substring(2, 7).toUpperCase();
+                }
+            }
+        }
+
+        function closeBinModal() {
+            var modal = document.getElementById('binModal');
+            if (modal) modal.style.display = 'none';
+            var url = new URL(window.location.href);
+            url.searchParams.delete('edit_bin');
+            url.searchParams.delete('id');
+            window.history.replaceState({}, '', url.toString());
+        }
+
+        // ============================================
+        // QR & BARCODE MODAL
+        // ============================================
+        function showBinBarcode(binNumber, locationName) {
+            document.getElementById('barcodeBinNum').textContent = binNumber;
+            document.getElementById('barcodeBinLoc').textContent = locationName || 'Warehouse Storage Bin';
+            
+            // Generate clean QR Code via QuickChart
+            var qrUrl = 'https://quickchart.io/qr?text=' + encodeURIComponent(binNumber) + '&size=200&ecLevel=M&margin=1';
+            document.getElementById('barcodeQrImg').src = qrUrl;
+            
+            document.getElementById('barcodeModal').style.display = 'flex';
+        }
+
+        function closeBarcodeModal() {
+            document.getElementById('barcodeModal').style.display = 'none';
+        }
+
+        function printBarcodeLabel() {
+            var printContents = document.getElementById('barcodePrintArea').innerHTML;
+            var win = window.open('', '_blank', 'width=500,height=500');
+            win.document.write('<html><head><title>Print Bin Label</title><style>body{font-family:sans-serif;text-align:center;padding:20px;}</style></head><body>' + printContents + '</body></html>');
+            win.document.close();
+            win.focus();
+            setTimeout(function() { win.print(); win.close(); }, 300);
+        }
+
+        // ============================================
+        // BARCODE SCANNER MODAL
+        // ============================================
+        function openBarcodeScannerModal() {
+            document.getElementById('scannerModal').style.display = 'flex';
+            document.getElementById('manualBarcodeInput').value = '';
+            document.getElementById('scanResult').innerHTML = 'Ready. Scan with handheld barcode gun or enter code.';
+            document.getElementById('manualBarcodeInput').focus();
+        }
+
+        function closeScannerModal() {
+            document.getElementById('scannerModal').style.display = 'none';
+        }
+
+        function processScanLookup() {
+            var code = document.getElementById('manualBarcodeInput').value.trim();
+            if (!code) {
+                document.getElementById('scanResult').innerHTML = '<span style="color:#DC2626;"><i class="fas fa-exclamation-triangle"></i> Please enter a barcode or bin number.</span>';
+                return;
+            }
+
+            document.getElementById('scanResult').innerHTML = '<i class="fas fa-spinner fa-spin"></i> Searching inventory &amp; bins...';
+            
+            // Check if matches a bin on this page
+            var upper = code.toUpperCase();
+            var foundBin = null;
+            var binLinks = document.querySelectorAll('span');
+            binLinks.forEach(function(el) {
+                if (el.textContent.trim().toUpperCase() === upper) {
+                    foundBin = el.textContent.trim();
+                }
+            });
+
+            if (foundBin) {
+                document.getElementById('scanResult').innerHTML = '<div style="color:#10B981; font-weight:600;"><i class="fas fa-check-circle"></i> Storage Bin Found: ' + foundBin + '</div><div style="margin-top:6px;"><a href="warehouse-zones.php?view=bins" class="btn btn-outline btn-sm">View in Bin Tracker</a></div>';
+            } else {
+                document.getElementById('scanResult').innerHTML = '<div style="color:#2563EB;"><i class="fas fa-qrcode"></i> Code Recognized: <strong>' + code + '</strong></div><div style="margin-top:8px; display:flex; gap:8px; justify-content:center;"><a href="inventory.php?search=' + encodeURIComponent(code) + '" class="btn btn-primary btn-sm">Lookup Product</a><a href="stock-movements.php?search=' + encodeURIComponent(code) + '" class="btn btn-outline btn-sm">Movement History</a></div>';
+            }
+        }
+        
+        // Close modals on background click or Escape
+        document.addEventListener('DOMContentLoaded', function() {
+            ['zoneModal', 'binModal', 'barcodeModal', 'scannerModal'].forEach(function(id) {
+                var el = document.getElementById(id);
+                if (el) {
+                    el.addEventListener('click', function(e) {
+                        if (e.target === this) {
+                            this.style.display = 'none';
+                        }
+                    });
+                }
+            });
+            
             document.addEventListener('keydown', function(e) {
                 if (e.key === 'Escape') {
-                    var modal = document.getElementById('zoneModal');
-                    if (modal && modal.style.display === 'flex') {
-                        closeZoneModal();
-                    }
+                    ['zoneModal', 'binModal', 'barcodeModal', 'scannerModal'].forEach(function(id) {
+                        var el = document.getElementById(id);
+                        if (el) el.style.display = 'none';
+                    });
                 }
             });
         });
         
-        // ============================================
-        // COLD CHAIN TEMPERATURE TOGGLE
-        // ============================================
+        // Cold chain temperature toggle
         document.getElementById('coldChainCheck')?.addEventListener('change', function() {
             var tempGroup = document.getElementById('temperatureGroup');
             if (this.checked) {
@@ -1532,42 +2015,6 @@ foreach ($zones as $z) {
             } else {
                 tempGroup.style.display = 'none';
             }
-        });
-        
-        // ============================================
-        // SIDEBAR TOGGLE (Mobile)
-        // ============================================
-        document.addEventListener('DOMContentLoaded', function() {
-            var sidebar = document.querySelector('.sidebar');
-            var overlay = document.getElementById('sidebarOverlay');
-            
-            var brand = document.querySelector('.sidebar-brand');
-            if (brand) {
-                var toggleBtn = document.createElement('button');
-                toggleBtn.className = 'sidebar-toggle-btn';
-                toggleBtn.innerHTML = '<i class="fas fa-bars"></i>';
-                toggleBtn.setAttribute('aria-label', 'Toggle Sidebar');
-                toggleBtn.addEventListener('click', function(e) {
-                    e.stopPropagation();
-                    sidebar.classList.toggle('open');
-                    overlay.classList.toggle('active');
-                });
-                brand.appendChild(toggleBtn);
-            }
-            
-            if (overlay) {
-                overlay.addEventListener('click', function() {
-                    sidebar.classList.remove('open');
-                    overlay.classList.remove('active');
-                });
-            }
-            
-            window.addEventListener('resize', function() {
-                if (window.innerWidth > 768 && sidebar.classList.contains('open')) {
-                    sidebar.classList.remove('open');
-                    overlay.classList.remove('active');
-                }
-            });
         });
     </script>
 </body>

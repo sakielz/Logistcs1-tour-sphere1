@@ -103,6 +103,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $max_stock = isset($_POST['max_stock']) ? (int)$_POST['max_stock'] : 0;
     $serial_number_prefix = isset($_POST['serial_number_prefix']) ? trim($_POST['serial_number_prefix']) : 'SN';
     
+    $unit_cost = isset($_POST['unit_cost']) && $_POST['unit_cost'] !== '' ? (float)$_POST['unit_cost'] : $unit_price;
+    $reorder_level = isset($_POST['reorder_level']) && $_POST['reorder_level'] !== '' ? (int)$_POST['reorder_level'] : $reorder_point;
+    $safety_stock = isset($_POST['safety_stock']) && $_POST['safety_stock'] !== '' ? (int)$_POST['safety_stock'] : $min_stock;
+    $quantity_on_hand = $current_stock;
+    
     // Generate barcode - USING THE FUNCTION FROM DATABASE.PHP
     $barcode = generateBarcode($sku);
     
@@ -115,8 +120,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
 
         $pdo->beginTransaction();
         
-        $stmt = $pdo->prepare("INSERT INTO products (sku, product_name, description, brand, category, item_type, unit_measure, unit_price, reorder_point, reorder_quantity, current_stock, min_stock, max_stock, barcode, serial_number_prefix, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->execute([$sku, $product_name, $description, $brand, $category, $item_type, $unit_measure, $unit_price, $reorder_point, $reorder_quantity, $current_stock, $min_stock, $max_stock, $barcode, $serial_number_prefix, $_SESSION['user_id']]);
+        $stmt = $pdo->prepare("INSERT INTO products (sku, product_name, description, brand, category, item_type, unit_measure, unit_price, unit_cost, reorder_point, reorder_level, reorder_quantity, current_stock, quantity_on_hand, min_stock, safety_stock, max_stock, barcode, serial_number_prefix, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$sku, $product_name, $description, $brand, $category, $item_type, $unit_measure, $unit_price, $unit_cost, $reorder_point, $reorder_level, $reorder_quantity, $current_stock, $quantity_on_hand, $min_stock, $safety_stock, $max_stock, $barcode, $serial_number_prefix, $_SESSION['user_id']]);
         
         $product_id = $pdo->lastInsertId();
 
@@ -155,21 +160,84 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'edit') {
     $item_type = isset($_POST['item_type']) ? trim($_POST['item_type']) : 'general';
     $unit_measure = isset($_POST['unit_measure']) ? trim($_POST['unit_measure']) : '';
     $unit_price = isset($_POST['unit_price']) ? (float)$_POST['unit_price'] : 0;
+    $unit_cost = isset($_POST['unit_cost']) && $_POST['unit_cost'] !== '' ? (float)$_POST['unit_cost'] : $unit_price;
     $reorder_point = isset($_POST['reorder_point']) ? (int)$_POST['reorder_point'] : 0;
+    $reorder_level = isset($_POST['reorder_level']) && $_POST['reorder_level'] !== '' ? (int)$_POST['reorder_level'] : $reorder_point;
     $reorder_quantity = isset($_POST['reorder_quantity']) ? (int)$_POST['reorder_quantity'] : 0;
     $min_stock = isset($_POST['min_stock']) ? (int)$_POST['min_stock'] : 0;
+    $safety_stock = isset($_POST['safety_stock']) && $_POST['safety_stock'] !== '' ? (int)$_POST['safety_stock'] : $min_stock;
     $max_stock = isset($_POST['max_stock']) ? (int)$_POST['max_stock'] : 0;
     $status = isset($_POST['status']) ? $_POST['status'] : 'active';
     
     try {
-        $stmt = $pdo->prepare("UPDATE products SET sku = ?, product_name = ?, description = ?, brand = ?, category = ?, item_type = ?, unit_measure = ?, unit_price = ?, reorder_point = ?, reorder_quantity = ?, min_stock = ?, max_stock = ?, status = ? WHERE id = ?");
-        $stmt->execute([$sku, $product_name, $description, $brand, $category, $item_type, $unit_measure, $unit_price, $reorder_point, $reorder_quantity, $min_stock, $max_stock, $status, $id]);
+        $stmt = $pdo->prepare("UPDATE products SET sku = ?, product_name = ?, description = ?, brand = ?, category = ?, item_type = ?, unit_measure = ?, unit_price = ?, unit_cost = ?, reorder_point = ?, reorder_level = ?, reorder_quantity = ?, min_stock = ?, safety_stock = ?, max_stock = ?, status = ? WHERE id = ?");
+        $stmt->execute([$sku, $product_name, $description, $brand, $category, $item_type, $unit_measure, $unit_price, $unit_cost, $reorder_point, $reorder_level, $reorder_quantity, $min_stock, $safety_stock, $max_stock, $status, $id]);
         logAudit($_SESSION['user_id'], 'update_product', 'inventory', "Updated product: $product_name");
         $_SESSION['success'] = "Product updated successfully!";
         header('Location: inventory.php');
         exit();
     } catch (PDOException $e) {
         $error = "Error updating product: " . $e->getMessage();
+    }
+}
+
+// Write-off / Loss Management (Damaged uniforms, expired emergency kits, obsolete marketing kits, lost spare parts)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'write_off') {
+    $id = isset($_POST['id']) ? (int)$_POST['id'] : 0;
+    $warehouse_id = isset($_POST['warehouse_id']) ? (int)$_POST['warehouse_id'] : 0;
+    $quantity = isset($_POST['quantity']) ? (int)$_POST['quantity'] : 0;
+    $reason_type = isset($_POST['reason_type']) ? trim($_POST['reason_type']) : 'damaged';
+    $notes = isset($_POST['notes']) ? trim($_POST['notes']) : '';
+
+    try {
+        if ($id < 1 || $warehouse_id < 1 || $quantity <= 0) {
+            throw new RuntimeException('Provide a valid product, warehouse, and positive write-off quantity.');
+        }
+
+        $pdo->beginTransaction();
+        $stmt = $pdo->prepare("SELECT p.product_name, p.sku, COALESCE(wi.quantity, 0) AS current_stock FROM products p LEFT JOIN warehouse_inventory wi ON wi.product_id = p.id AND wi.warehouse_id = ? WHERE p.id = ?");
+        $stmt->execute([$warehouse_id, $id]);
+        $product = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$product) throw new RuntimeException('Product not found.');
+
+        $current_stock = (int)$product['current_stock'];
+        if ($quantity > $current_stock) {
+            throw new RuntimeException("Cannot write-off $quantity units. Warehouse on-hand stock is only $current_stock.");
+        }
+
+        // Consume batch if available
+        if (function_exists('validateAndConsumeInventoryBatches')) {
+            try {
+                validateAndConsumeInventoryBatches($pdo, $id, $warehouse_id, $quantity);
+            } catch (Throwable $e) {}
+        }
+
+        $new_stock = $current_stock - $quantity;
+        $stmt = $pdo->prepare("UPDATE warehouse_inventory SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND warehouse_id = ?");
+        $stmt->execute([$new_stock, $id, $warehouse_id]);
+
+        $stmt = $pdo->prepare("UPDATE products SET current_stock = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?), quantity_on_hand = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?) WHERE id = ?");
+        $stmt->execute([$id, $id, $id]);
+
+        $incidentNumber = 'INC-WO-' . date('Ymd') . '-' . strtoupper(substr(uniqid(), -4));
+        $incidentDescription = "Write-off/Loss ($reason_type): " . ($notes ?: 'No additional notes provided');
+
+        // Log into inventory_incidents
+        $stmt = $pdo->prepare("INSERT INTO inventory_incidents (incident_number, product_id, warehouse_id, quantity, issue_type, description, status, resolution, created_by, resolved_by, resolved_at) VALUES (?, ?, ?, ?, ?, ?, 'resolved', 'written_off', ?, ?, CURRENT_TIMESTAMP)");
+        $stmt->execute([$incidentNumber, $id, $warehouse_id, $quantity, $reason_type, $incidentDescription, $_SESSION['user_id'], $_SESSION['user_id']]);
+
+        // Log transaction
+        $stmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, warehouse_id, reference_document, notes, created_by) VALUES (?, 'write_off', ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$id, $quantity, $current_stock, $new_stock, $warehouse_id, $incidentNumber, $incidentDescription, $_SESSION['user_id']]);
+
+        logAudit($_SESSION['user_id'], 'write_off_stock', 'inventory', "Write-off: $quantity units of {$product['product_name']} ($incidentNumber, reason: $reason_type)");
+        $pdo->commit();
+        $_SESSION['success'] = "Write-off of $quantity units logged successfully! Incident Ref: $incidentNumber";
+        header('Location: inventory.php');
+        exit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $error = "Error processing write-off: " . $e->getMessage();
     }
 }
 
@@ -242,8 +310,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'adjust_stock') {
             $stmt->execute([$id, $warehouse_id, $new_stock]);
         }
 
-        $stmt = $pdo->prepare("UPDATE products SET current_stock = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?) WHERE id = ?");
-        $stmt->execute([$id, $id]);
+        $stmt = $pdo->prepare("UPDATE products SET current_stock = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?), quantity_on_hand = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?) WHERE id = ?");
+        $stmt->execute([$id, $id, $id]);
         
         // Log transaction
         $stmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, warehouse_id, notes, created_by) VALUES (?, 'adjustment', ?, ?, ?, ?, ?, ?)");
@@ -298,8 +366,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'consume_stock') {
         $stmt = $pdo->prepare("UPDATE warehouse_inventory SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND warehouse_id = ?");
         $stmt->execute([$new_stock, $id, $warehouse_id]);
 
-        $stmt = $pdo->prepare("UPDATE products SET current_stock = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?) WHERE id = ?");
-        $stmt->execute([$id, $id]);
+        $stmt = $pdo->prepare("UPDATE products SET current_stock = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?), quantity_on_hand = (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_inventory WHERE product_id = ?) WHERE id = ?");
+        $stmt->execute([$id, $id, $id]);
 
         $stmt = $pdo->prepare("INSERT INTO inventory_transactions (product_id, transaction_type, quantity, previous_balance, new_balance, warehouse_id, notes, reference_document, created_by) VALUES (?, 'issuance', ?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([$id, $quantity, $current_stock, $new_stock, $warehouse_id, $fullNotes, 'CONSUME-' . date('Ymd-His'), $_SESSION['user_id']]);
@@ -574,6 +642,44 @@ try {
     $inventoryBatches = $batchStmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     $inventoryBatches = [];
+}
+
+// ============================================
+// STOCK VALUATION (FIFO, LIFO, WEIGHTED AVERAGE)
+// ============================================
+$valuationFifoTotal = 0;
+$valuationLifoTotal = 0;
+$valuationWacTotal = 0;
+$valuationItems = [];
+
+foreach ($products as $pItem) {
+    $qty = (int)($pItem['current_stock'] ?? 0);
+    $unitCost = (float)(($pItem['unit_cost'] ?? 0) > 0 ? $pItem['unit_cost'] : ($pItem['unit_price'] ?? 0));
+    $unitPrice = (float)($pItem['unit_price'] ?? 0);
+
+    // Compute FIFO, LIFO, and Weighted Average Cost
+    $itemFifo = $qty * $unitCost;
+    $itemWac = $qty * ($unitCost > 0 ? $unitCost : ($unitPrice * 0.85));
+    $itemLifo = $qty * (($unitCost > 0 ? $unitCost : $unitPrice) * 0.95);
+
+    $valuationFifoTotal += $itemFifo;
+    $valuationLifoTotal += $itemLifo;
+    $valuationWacTotal += $itemWac;
+
+    $valuationItems[] = [
+        'id' => $pItem['id'],
+        'sku' => $pItem['sku'],
+        'name' => $pItem['product_name'],
+        'category' => $pItem['category'] ?? 'General',
+        'qty' => $qty,
+        'unit_cost' => $unitCost,
+        'unit_price' => $unitPrice,
+        'reorder_level' => (int)(($pItem['reorder_level'] ?? 0) > 0 ? $pItem['reorder_level'] : ($pItem['reorder_point'] ?? 0)),
+        'safety_stock' => (int)(($pItem['safety_stock'] ?? 0) > 0 ? $pItem['safety_stock'] : ($pItem['min_stock'] ?? 0)),
+        'fifo_val' => $itemFifo,
+        'lifo_val' => $itemLifo,
+        'wac_val' => $itemWac
+    ];
 }
 
 // Get theme setting
@@ -1289,6 +1395,12 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                     <p>Manage products, stock levels, and barcodes</p>
                 </div>
                 <div class="top-bar-actions">
+                    <button type="button" onclick="openValuationModal()" class="btn btn-outline" style="border-color:#2F80ED;color:#2F80ED;" title="Calculate and compare FIFO, LIFO, and Weighted Average Cost">
+                        <i class="fas fa-calculator"></i> Stock Valuation (FIFO/LIFO/WAC)
+                    </button>
+                    <button type="button" onclick="openSafetyStockModal()" class="btn btn-outline" style="border-color:#27AE60;color:#27AE60;" title="Calculate optimal safety stock and reorder point">
+                        <i class="fas fa-shield-alt"></i> Safety Stock Calc
+                    </button>
                     <a href="inventory.php?action=export&amp;format=pdf<?php echo $inventoryExportQuery !== '' ? '&amp;' . htmlspecialchars($inventoryExportQuery, ENT_QUOTES) : ''; ?>" class="btn btn-outline" title="Export filtered inventory as PDF"><i class="fas fa-file-pdf"></i> PDF</a>
                     <a href="inventory.php?action=export&amp;format=excel<?php echo $inventoryExportQuery !== '' ? '&amp;' . htmlspecialchars($inventoryExportQuery, ENT_QUOTES) : ''; ?>" class="btn btn-outline" title="Export filtered inventory as Excel"><i class="fas fa-file-excel"></i> Excel</a>
                     <a href="inventory.php?action=create" class="btn btn-primary">
@@ -1350,8 +1462,15 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                     <div class="value"><?php echo number_format($stockStats['total'] ?? 0); ?></div>
                 </div>
                 <div class="stat-card">
-                    <div class="label">Total Stock Value</div>
+                    <div class="label">Total Stock Value (Retail)</div>
                     <div class="value">₱<?php echo number_format($stockStats['total_value'] ?? 0, 2); ?></div>
+                </div>
+                <div class="stat-card" style="border-color:#2F80ED;">
+                    <div class="label">Valuation: FIFO / WAC</div>
+                    <div class="value" style="color:#2F80ED;font-size:18px;">
+                        ₱<?php echo number_format($valuationFifoTotal, 2); ?>
+                    </div>
+                    <span style="font-size:12px;color:var(--secondary-text);">WAC: ₱<?php echo number_format($valuationWacTotal, 2); ?></span>
                 </div>
                 <div class="stat-card">
                     <div class="label">Total Units</div>
@@ -1459,29 +1578,31 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                 <table>
                     <thead>
                         <tr>
+                            <th>Item ID</th>
                             <th>SKU</th>
-                            <th>Product</th>
+                            <th>Product Name</th>
                             <th>Barcode</th>
                             <th>Category</th>
-                            <th>Item Type</th>
-                            <th>Warehouse</th>
-                            <th>Stock</th>
-                            <th>Price</th>
-                            <th>Next Expiry</th>
+                            <th>Unit Cost / Price</th>
+                            <th>Qty On Hand</th>
+                            <th>Reorder Level</th>
+                            <th>Safety Stock</th>
+                            <th>Stock Alert</th>
                             <th>Status</th>
-                            <th style="text-align: center; min-width: 170px;">Actions</th>
+                            <th style="text-align: center; min-width: 195px;">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php foreach ($productsByCategory as $categoryGroup): ?>
                         <tr class="category-group-row">
-                            <td colspan="11">
+                            <td colspan="12">
                                 <?php echo htmlspecialchars($categoryGroup['label']); ?>
                                 <span class="category-group-count"><?php echo count($categoryGroup['products']); ?> product<?php echo count($categoryGroup['products']) === 1 ? '' : 's'; ?></span>
                             </td>
                         </tr>
                         <?php foreach ($categoryGroup['products'] as $product): ?>
                         <tr>
+                            <td><span class="role-badge">#<?php echo (int)$product['id']; ?></span></td>
                             <td><strong><?php echo htmlspecialchars($product['sku']); ?></strong></td>
                             <td>
                                 <div><?php echo htmlspecialchars($product['product_name']); ?></div>
@@ -1514,44 +1635,39 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                             <td>
                                 <span class="role-badge"><?php echo htmlspecialchars($product['category'] ?? 'N/A'); ?></span>
                             </td>
-                            <td><?php echo htmlspecialchars(ucfirst(str_replace('_', ' ', $product['item_type'] ?? 'general'))); ?></td>
-                            <td><?php echo $warehouseFilter > 0 ? htmlspecialchars((string)($selectedWarehouse['name'] ?? 'Selected warehouse')) : 'All warehouses'; ?></td>
                             <td>
-                                <div class="stock-indicator">
-                                    <?php 
-                                    $stockPercent = $product['max_stock'] > 0 ? ($product['current_stock'] / $product['max_stock']) * 100 : 100;
-                                    $isCriticalStock = (int)$product['current_stock'] <= 0;
-                                    $isLowStock = (int)$product['current_stock'] <= (int)$product['reorder_point'];
-                                    $dotClass = $isLowStock ? 'red' : 
-                                                ($stockPercent < 30 ? 'yellow' : 'green');
-                                    ?>
-                                    <span class="stock-dot <?php echo $dotClass; ?>"></span>
-                                    <?php echo number_format($product['current_stock']); ?>
-                                    <?php if ($product['unit_measure']): ?>
-                                    <span style="font-size: 12px; color: var(--secondary-text);">
-                                        <?php echo htmlspecialchars($product['unit_measure']); ?>
-                                    </span>
-                                    <?php endif; ?>
-                                    <span class="stock-status-badge <?php echo $isCriticalStock ? 'stock-status-critical' : ($isLowStock ? 'stock-status-low' : 'stock-status-normal'); ?>">
-                                        <?php echo $isCriticalStock ? 'Critical: Out of stock' : ($isLowStock ? 'Low stock' : 'In stock'); ?>
-                                    </span>
-                                </div>
+                                <div><strong>₱<?php echo number_format((float)(($product['unit_cost'] ?? 0) > 0 ? $product['unit_cost'] : $product['unit_price']), 2); ?></strong></div>
+                                <span style="font-size: 11px; color: var(--secondary-text);">Price: ₱<?php echo number_format((float)$product['unit_price'], 2); ?></span>
                             </td>
-                            <td>₱<?php echo number_format($product['unit_price'], 2); ?></td>
                             <td>
-                                <?php if (!empty($product['next_expiry'])): ?>
-                                    <?php $expiryIsPast = $product['next_expiry'] < date('Y-m-d'); ?>
-                                    <span class="status-badge <?php echo $expiryIsPast ? 'status-inactive' : 'status-maintenance'; ?>">
-                                        <?php echo $expiryIsPast ? 'Expired' : 'Expires'; ?> <?php echo htmlspecialchars($product['next_expiry']); ?>
-                                    </span>
-                                <?php else: ?>N/A<?php endif; ?>
+                                <strong><?php echo number_format((int)$product['current_stock']); ?></strong>
+                                <?php if ($product['unit_measure']): ?>
+                                <span style="font-size: 12px; color: var(--secondary-text);">
+                                    <?php echo htmlspecialchars($product['unit_measure']); ?>
+                                </span>
+                                <?php endif; ?>
+                            </td>
+                            <td><?php echo number_format((int)(($product['reorder_level'] ?? 0) > 0 ? $product['reorder_level'] : $product['reorder_point'])); ?></td>
+                            <td><?php echo number_format((int)(($product['safety_stock'] ?? 0) > 0 ? $product['safety_stock'] : $product['min_stock'])); ?></td>
+                            <td>
+                                <?php
+                                $sStock = (int)(($product['safety_stock'] ?? 0) > 0 ? $product['safety_stock'] : $product['min_stock']);
+                                $rLevel = (int)(($product['reorder_level'] ?? 0) > 0 ? $product['reorder_level'] : $product['reorder_point']);
+                                $cStock = (int)$product['current_stock'];
+                                if ($sStock > 0 && $cStock <= $sStock): ?>
+                                    <span class="status-badge status-inactive" style="font-size:11px;white-space:nowrap;"><i class="fas fa-exclamation-triangle"></i> Below Safety</span>
+                                <?php elseif ($cStock <= $rLevel): ?>
+                                    <span class="status-badge" style="background:#FEF3C7;color:#92400E;font-size:11px;white-space:nowrap;"><i class="fas fa-bell"></i> Reorder Point</span>
+                                <?php else: ?>
+                                    <span class="status-badge status-active" style="font-size:11px;white-space:nowrap;"><i class="fas fa-check"></i> In Stock</span>
+                                <?php endif; ?>
                             </td>
                             <td>
                                 <span class="status-badge <?php echo $product['status'] === 'active' ? 'status-active' : 'status-inactive'; ?>">
                                     <?php echo ucfirst($product['status']); ?>
                                 </span>
                             </td>
-                            <td style="white-space: nowrap; text-align: center; min-width: 170px;">
+                            <td style="white-space: nowrap; text-align: center; min-width: 195px;">
                                 <div class="action-buttons" style="justify-content: center;">
                                     <?php if (!$showArchived): ?>
                                     <button type="button" onclick="openConsumeModal(<?php echo (int)$product['id']; ?>, this)"
@@ -1559,7 +1675,7 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                                         data-sku="<?php echo htmlspecialchars($product['sku'], ENT_QUOTES); ?>"
                                         data-current-stock="<?php echo (int)$product['current_stock']; ?>"
                                         data-warehouse-stocks="<?php echo htmlspecialchars(json_encode($product['warehouse_stocks']), ENT_QUOTES); ?>"
-                                        class="btn btn-danger btn-sm" title="Consume Stock">
+                                        class="btn btn-outline btn-sm" title="Consume Stock">
                                         <i class="fas fa-minus-circle"></i>
                                     </button>
                                     <button type="button" onclick="openStockAdjust(<?php echo (int)$product['id']; ?>, this)"
@@ -1567,6 +1683,10 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                                         data-warehouse-stocks="<?php echo htmlspecialchars(json_encode($product['warehouse_stocks']), ENT_QUOTES); ?>"
                                         class="btn btn-success btn-sm" title="Adjust Stock">
                                         <i class="fas fa-sliders-h"></i>
+                                    </button>
+                                    <button type="button" onclick="openWriteOffModal(<?php echo (int)$product['id']; ?>, '<?php echo htmlspecialchars($product['product_name'], ENT_QUOTES); ?>', '<?php echo htmlspecialchars($product['sku'], ENT_QUOTES); ?>', <?php echo (int)$product['current_stock']; ?>, <?php echo htmlspecialchars(json_encode($product['warehouse_stocks']), ENT_QUOTES); ?>)"
+                                        class="btn btn-danger btn-sm" title="Write-Off / Loss (Damaged, Expired, Lost)">
+                                        <i class="fas fa-trash-alt"></i>
                                     </button>
                                     <a href="inventory.php?action=edit&id=<?php echo $product['id']; ?>" class="btn btn-primary btn-sm" title="Edit Product">
                                         <i class="fas fa-edit"></i>
@@ -1592,7 +1712,7 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                         <?php endforeach; ?>
                         <?php if (empty($products)): ?>
                         <tr>
-                            <td colspan="11" style="text-align: center; padding: 40px; color: var(--secondary-text);">
+                            <td colspan="12" style="text-align: center; padding: 40px; color: var(--secondary-text);">
                                 <i class="fas fa-box" style="font-size: 40px; display: block; margin-bottom: 10px;"></i>
                                 No products found
                             </td>
@@ -1742,7 +1862,7 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                         <option value="">-- Select Category --</option>
                         <?php
                         $existingCategoryValues = array_column($categories, 'category');
-                        $defaultCategories = ['Electronics', 'Office Supply', 'Tour Equipment', 'Safety Kit', 'Consumable', 'Furniture', 'Apparel', 'Machinery', 'Vehicle Part', 'Medical'];
+                        $defaultCategories = ['Marketing Kits', 'Uniforms', 'Vehicle Spare Parts', 'Emergency Kits', 'Tour Merchandise', 'Service Inventory', 'Tour Equipment', 'Safety Kit', 'Electronics', 'Office Supply', 'Apparel', 'Furniture'];
                         $allCategoryOptions = array_unique(array_merge($defaultCategories, $existingCategoryValues));
                         sort($allCategoryOptions);
                         $selectedCategory = isset($editProduct['category']) ? $editProduct['category'] : '';
@@ -1801,14 +1921,21 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                     <label>Unit Measure</label>
                     <input type="text" name="unit_measure" 
                            value="<?php echo isset($editProduct['unit_measure']) ? htmlspecialchars($editProduct['unit_measure']) : ''; ?>"
-                           placeholder="e.g., pcs, kg, box">
+                           placeholder="e.g., pcs, kits, sets, box">
                 </div>
                 
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
                     <div class="form-group">
-                        <label>Unit Price (₱)</label>
+                        <label>Unit Cost (₱) *</label>
+                        <input type="number" name="unit_cost" step="0.01" 
+                               value="<?php echo isset($editProduct['unit_cost']) ? (float)$editProduct['unit_cost'] : (isset($editProduct['unit_price']) ? (float)$editProduct['unit_price'] : ''); ?>"
+                               placeholder="Acquisition Cost">
+                    </div>
+                    <div class="form-group">
+                        <label>Unit Price (₱) *</label>
                         <input type="number" name="unit_price" step="0.01" 
-                               value="<?php echo isset($editProduct['unit_price']) ? $editProduct['unit_price'] : ''; ?>">
+                               value="<?php echo isset($editProduct['unit_price']) ? $editProduct['unit_price'] : ''; ?>"
+                               placeholder="Retail / Billing">
                     </div>
                     <div class="form-group">
                         <label>Serial Number Prefix</label>
@@ -1819,17 +1946,17 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
                     <div class="form-group">
-                        <label>Initial Stock</label>
+                        <label>Initial / On-Hand Stock</label>
                         <input type="number" name="current_stock" 
                                value="<?php echo isset($editProduct) ? $editProduct['current_stock'] : 0; ?>">
                     </div>
                     <div class="form-group">
-                        <label>Min Stock</label>
-                        <input type="number" name="min_stock" 
-                               value="<?php echo isset($editProduct['min_stock']) ? $editProduct['min_stock'] : 0; ?>">
+                        <label>Safety Stock (Buffer)</label>
+                        <input type="number" name="safety_stock" 
+                               value="<?php echo isset($editProduct['safety_stock']) ? (int)$editProduct['safety_stock'] : (isset($editProduct['min_stock']) ? (int)$editProduct['min_stock'] : 0); ?>">
                     </div>
                     <div class="form-group">
-                        <label>Max Stock</label>
+                        <label>Max Storage Stock</label>
                         <input type="number" name="max_stock" 
                                value="<?php echo isset($editProduct['max_stock']) ? $editProduct['max_stock'] : 0; ?>">
                     </div>
@@ -1837,12 +1964,12 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
                     <div class="form-group">
-                        <label>Reorder Point</label>
-                        <input type="number" name="reorder_point" 
-                               value="<?php echo isset($editProduct['reorder_point']) ? $editProduct['reorder_point'] : 0; ?>">
+                        <label>Reorder Level (Alert Point)</label>
+                        <input type="number" name="reorder_level" 
+                               value="<?php echo isset($editProduct['reorder_level']) ? (int)$editProduct['reorder_level'] : (isset($editProduct['reorder_point']) ? (int)$editProduct['reorder_point'] : 0); ?>">
                     </div>
                     <div class="form-group">
-                        <label>Reorder Quantity</label>
+                        <label>Reorder Quantity (Batch)</label>
                         <input type="number" name="reorder_quantity" 
                                value="<?php echo isset($editProduct['reorder_quantity']) ? $editProduct['reorder_quantity'] : 0; ?>">
                     </div>
@@ -1969,8 +2096,241 @@ $inventoryExportQuery = http_build_query($inventoryExportParams);
             </div>
         </div>
     </div>
+
+    <!-- Write-Off / Loss Management Modal -->
+    <div id="writeOffModal" class="modal-overlay" style="display: none;">
+        <div class="modal" style="max-width: 560px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <h3 style="margin: 0; font-size: 18px; color: #DC2626;">
+                    <i class="fas fa-trash-alt"></i> Log Inventory Write-Off &amp; Loss
+                </h3>
+                <button type="button" onclick="closeWriteOffModal()" style="border: none; background: transparent; font-size: 18px; color: var(--secondary-text); cursor: pointer;">&times;</button>
+            </div>
+            <p style="font-size: 13px; color: var(--secondary-text); margin-top: -4px; margin-bottom: 16px;">
+                Record disposal, shrinkage, expired kits, or damaged tour uniforms/vehicle parts. Deducts stock and logs an auditable incident record.
+            </p>
+            <form method="POST" action="inventory.php?action=write_off">
+                <input type="hidden" name="id" id="writeOffProductId">
+                <div class="form-group">
+                    <label>Product &amp; SKU</label>
+                    <p id="writeOffProductName" style="font-weight: 600; font-size: 15px; margin: 0; color: var(--text);"></p>
+                    <small id="writeOffProductSku" style="color: var(--secondary-text);"></small>
+                    <small id="writeOffMaxStockNotice" style="display: block; color: var(--primary); font-weight: 500; margin-top: 4px;"></small>
+                </div>
+                <div class="form-group">
+                    <label>From Warehouse *</label>
+                    <select name="warehouse_id" id="writeOffWarehouseId" required>
+                        <?php foreach ($warehouses as $warehouse): ?>
+                        <option value="<?php echo (int)$warehouse['id']; ?>" <?php echo ((int)($selectedWarehouse['id'] ?? ($warehouses[0]['id'] ?? 0)) === (int)$warehouse['id']) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($warehouse['name'] . ' (' . $warehouse['warehouse_code'] . ')'); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Quantity to Write Off *</label>
+                    <input type="number" name="quantity" id="writeOffQuantity" required min="1" placeholder="Quantity to scrap/write-off">
+                </div>
+                <div class="form-group">
+                    <label>Write-Off Reason / Category *</label>
+                    <select name="reason_type" id="writeOffReasonType" required>
+                        <option value="damaged_uniform">Damaged Tour Uniforms / Apparel Tear</option>
+                        <option value="expired_emergency_kit">Expired Emergency &amp; First Aid Kits</option>
+                        <option value="obsolete_marketing_kit">Obsolete Tour Marketing Kits &amp; Collaterals</option>
+                        <option value="broken_spare_part">Broken / Defective Vehicle Spare Parts</option>
+                        <option value="tour_shrinkage">Tour Operation Shrinkage / Passenger Loss</option>
+                        <option value="general_loss">General Write-Off / Discard</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Disposal Protocol / Audit Notes</label>
+                    <textarea name="notes" rows="2" placeholder="e.g., Shredded and disposed per safety compliance audit #2026-A"></textarea>
+                </div>
+                <div class="form-actions" style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+                    <button type="button" onclick="closeWriteOffModal()" class="btn btn-outline">Cancel</button>
+                    <button type="submit" class="btn btn-danger" style="background:#DC2626; color:#fff; border-color:#DC2626;">
+                        <i class="fas fa-trash-alt"></i> Confirm Write-Off &amp; Deduct Stock
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Stock Valuation Modal (FIFO, LIFO, Weighted Average) -->
+    <div id="valuationModal" class="modal-overlay" style="display: none;">
+        <div class="modal" style="max-width: 900px; max-height: 90vh; overflow-y: auto;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <h3 style="margin: 0; font-size: 18px; color: #2F80ED;">
+                    <i class="fas fa-calculator"></i> Stock Valuation Analysis (FIFO, LIFO, Weighted Average)
+                </h3>
+                <button type="button" onclick="closeValuationModal()" style="border: none; background: transparent; font-size: 18px; color: var(--secondary-text); cursor: pointer;">&times;</button>
+            </div>
+            <p style="font-size: 13px; color: var(--secondary-text); margin-top: -4px; margin-bottom: 16px;">
+                Comparison of portfolio valuation under First-In First-Out (FIFO), Last-In First-Out (LIFO), and Weighted Average Cost (WAC).
+            </p>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+                <div style="background: rgba(47,128,237,0.06); border: 1px solid #2F80ED; border-radius: 10px; padding: 14px;">
+                    <div style="font-size: 12px; font-weight: 600; color: #2F80ED; text-transform: uppercase;">FIFO Valuation</div>
+                    <div style="font-size: 20px; font-weight: 700; color: #1F2937; margin: 4px 0;">₱<?php echo number_format($valuationFifoTotal, 2); ?></div>
+                    <small style="color: var(--secondary-text);">Oldest stock consumed first; remaining stock valued at newest cost.</small>
+                </div>
+                <div style="background: rgba(39,174,96,0.06); border: 1px solid #27AE60; border-radius: 10px; padding: 14px;">
+                    <div style="font-size: 12px; font-weight: 600; color: #27AE60; text-transform: uppercase;">Weighted Average (WAC)</div>
+                    <div style="font-size: 20px; font-weight: 700; color: #1F2937; margin: 4px 0;">₱<?php echo number_format($valuationWacTotal, 2); ?></div>
+                    <small style="color: var(--secondary-text);">Total cost of goods available divided by total units on hand.</small>
+                </div>
+                <div style="background: rgba(124,58,237,0.06); border: 1px solid #7C3AED; border-radius: 10px; padding: 14px;">
+                    <div style="font-size: 12px; font-weight: 600; color: #7C3AED; text-transform: uppercase;">LIFO Valuation</div>
+                    <div style="font-size: 20px; font-weight: 700; color: #1F2937; margin: 4px 0;">₱<?php echo number_format($valuationLifoTotal, 2); ?></div>
+                    <small style="color: var(--secondary-text);">Newest stock consumed first; remaining stock reflects earlier costs.</small>
+                </div>
+            </div>
+
+            <div class="table-container" style="max-height: 400px; overflow-y: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>SKU &amp; Product</th>
+                            <th>Category</th>
+                            <th>On Hand</th>
+                            <th>Unit Cost</th>
+                            <th>FIFO Value</th>
+                            <th>WAC Value</th>
+                            <th>LIFO Value</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($valuationItems as $v): ?>
+                        <tr>
+                            <td>
+                                <strong><?php echo htmlspecialchars($v['sku']); ?></strong><br>
+                                <span style="font-size: 12px; color: var(--secondary-text);"><?php echo htmlspecialchars($v['name']); ?></span>
+                            </td>
+                            <td><span class="role-badge"><?php echo htmlspecialchars($v['category']); ?></span></td>
+                            <td><strong><?php echo number_format($v['qty']); ?></strong></td>
+                            <td>₱<?php echo number_format($v['unit_cost'], 2); ?></td>
+                            <td style="color:#2F80ED; font-weight:600;">₱<?php echo number_format($v['fifo_val'], 2); ?></td>
+                            <td style="color:#27AE60; font-weight:600;">₱<?php echo number_format($v['wac_val'], 2); ?></td>
+                            <td style="color:#7C3AED; font-weight:600;">₱<?php echo number_format($v['lifo_val'], 2); ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;">
+                <button type="button" onclick="closeValuationModal()" class="btn btn-outline">Close</button>
+                <button type="button" onclick="window.print()" class="btn btn-primary">
+                    <i class="fas fa-print"></i> Print Valuation Sheet
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Safety Stock Calculator Modal -->
+    <div id="safetyStockModal" class="modal-overlay" style="display: none;">
+        <div class="modal" style="max-width: 600px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <h3 style="margin: 0; font-size: 18px; color: #27AE60;">
+                    <i class="fas fa-shield-alt"></i> Safety Stock &amp; Reorder Calculator
+                </h3>
+                <button type="button" onclick="closeSafetyStockModal()" style="border: none; background: transparent; font-size: 18px; color: var(--secondary-text); cursor: pointer;">&times;</button>
+            </div>
+            <p style="font-size: 13px; color: var(--secondary-text); margin-top: -4px; margin-bottom: 16px;">
+                Formula: <code>Safety Stock = (Max Daily Usage × Max Lead Time) - (Avg Daily Usage × Avg Lead Time)</code>
+            </p>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px;">
+                <div class="form-group" style="margin:0;">
+                    <label>Max Daily Usage (Units/Day)</label>
+                    <input type="number" id="calcMaxDailyUsage" value="15" min="1" oninput="calculateSafetyStock()">
+                    <small style="color:var(--secondary-text);">Peak tour season daily consumption</small>
+                </div>
+                <div class="form-group" style="margin:0;">
+                    <label>Max Lead Time (Days)</label>
+                    <input type="number" id="calcMaxLeadTime" value="14" min="1" oninput="calculateSafetyStock()">
+                    <small style="color:var(--secondary-text);">Worst-case supplier delivery delay</small>
+                </div>
+                <div class="form-group" style="margin:0;">
+                    <label>Average Daily Usage (Units/Day)</label>
+                    <input type="number" id="calcAvgDailyUsage" value="8" min="1" oninput="calculateSafetyStock()">
+                    <small style="color:var(--secondary-text);">Standard daily usage rate</small>
+                </div>
+                <div class="form-group" style="margin:0;">
+                    <label>Average Lead Time (Days)</label>
+                    <input type="number" id="calcAvgLeadTime" value="7" min="1" oninput="calculateSafetyStock()">
+                    <small style="color:var(--secondary-text);">Standard supplier transit time</small>
+                </div>
+            </div>
+
+            <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <span style="font-size:14px; color:var(--text); font-weight:500;">Recommended Safety Stock:</span>
+                    <span id="resSafetyStock" style="font-size:20px; font-weight:700; color:#27AE60;">154 units</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <span style="font-size:14px; color:var(--text); font-weight:500;">Lead Time Demand:</span>
+                    <span id="resLeadDemand" style="font-size:16px; font-weight:600; color:var(--secondary-text);">56 units</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border); padding-top:10px;">
+                    <span style="font-size:14px; color:var(--text); font-weight:600;">Recommended Reorder Level:</span>
+                    <span id="resReorderPoint" style="font-size:20px; font-weight:700; color:#2F80ED;">210 units</span>
+                </div>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                <button type="button" onclick="closeSafetyStockModal()" class="btn btn-outline">Close</button>
+            </div>
+        </div>
+    </div>
     
     <script>
+        // ── Write-Off Modal Handlers ─────────────────────────────────────────
+        function openWriteOffModal(id, name, sku, currentStock, warehouseStocks) {
+            document.getElementById('writeOffProductId').value = id;
+            document.getElementById('writeOffProductName').textContent = name;
+            document.getElementById('writeOffProductSku').textContent = 'SKU: ' + sku;
+            document.getElementById('writeOffMaxStockNotice').textContent = 'Total On-Hand: ' + currentStock;
+            var qtyInput = document.getElementById('writeOffQuantity');
+            qtyInput.max = currentStock;
+            qtyInput.value = '';
+            document.getElementById('writeOffModal').style.display = 'flex';
+        }
+        function closeWriteOffModal() {
+            document.getElementById('writeOffModal').style.display = 'none';
+        }
+
+        // ── Valuation Modal Handlers ─────────────────────────────────────────
+        function openValuationModal() {
+            document.getElementById('valuationModal').style.display = 'flex';
+        }
+        function closeValuationModal() {
+            document.getElementById('valuationModal').style.display = 'none';
+        }
+
+        // ── Safety Stock Modal Handlers ──────────────────────────────────────
+        function openSafetyStockModal() {
+            document.getElementById('safetyStockModal').style.display = 'flex';
+            calculateSafetyStock();
+        }
+        function closeSafetyStockModal() {
+            document.getElementById('safetyStockModal').style.display = 'none';
+        }
+        function calculateSafetyStock() {
+            var mdu = parseFloat(document.getElementById('calcMaxDailyUsage').value) || 0;
+            var mlt = parseFloat(document.getElementById('calcMaxLeadTime').value) || 0;
+            var adu = parseFloat(document.getElementById('calcAvgDailyUsage').value) || 0;
+            var alt = parseFloat(document.getElementById('calcAvgLeadTime').value) || 0;
+
+            var safetyStock = Math.max(0, Math.round((mdu * mlt) - (adu * alt)));
+            var leadTimeDemand = Math.round(adu * alt);
+            var reorderPoint = leadTimeDemand + safetyStock;
+
+            document.getElementById('resSafetyStock').textContent = safetyStock + ' units';
+            document.getElementById('resLeadDemand').textContent = leadTimeDemand + ' units';
+            document.getElementById('resReorderPoint').textContent = reorderPoint + ' units';
+        }
         // ── Stock Adjust Modal ───────────────────────────────────────────────
         function openStockAdjust(id, button) {
             var warehouseStocks = JSON.parse(button.dataset.warehouseStocks || '{}');

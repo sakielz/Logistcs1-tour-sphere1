@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // admin/warehouses.php
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
@@ -171,7 +171,10 @@ if ($action === 'delete' && isset($_GET['id'])) {
 // Get warehouses
 $showArchived = isset($_GET['archived']) ? 1 : 0;
 try {
-    $stmt = $pdo->prepare("SELECT w.*, g.group_name, COUNT(DISTINCT wi.product_id) AS stocked_products, COALESCE(SUM(wi.quantity), 0) AS stored_units
+    $stmt = $pdo->prepare("SELECT w.*, g.group_name, 
+                           COUNT(DISTINCT wi.product_id) AS stocked_products, 
+                           COALESCE(SUM(wi.quantity), 0) AS stored_units,
+                           COALESCE((SELECT COUNT(*) FROM warehouse_bins WHERE warehouse_id = w.id), 0) AS bin_count
                            FROM warehouses w
                            LEFT JOIN inventory_groups g ON g.id = w.group_id
                            LEFT JOIN warehouse_inventory wi ON wi.warehouse_id = w.id
@@ -667,13 +670,12 @@ try {
                     <table>
                         <thead>
                             <tr>
-                                <th>Warehouse Code</th>
-                                <th>Name</th>
-                                <th>Group</th>
-                                <th>Location</th>
-                                <th>Capacity</th>
+                                <th>Warehouse_ID</th>
+                                <th>Location_Name</th>
+                                <th>Storage_Capacity</th>
+                                <th>Current_Stock_Levels</th>
+                                <th>Storage Bins</th>
                                 <th>Products</th>
-                                <th>Units Stored</th>
                                 <th>Type</th>
                                 <th>Status</th>
                                 <th>Actions</th>
@@ -681,15 +683,34 @@ try {
                         </thead>
                         <tbody>
                             <?php if (!empty($warehouses)): ?>
-                                <?php foreach ($warehouses as $warehouse): ?>
+                                <?php foreach ($warehouses as $warehouse): 
+                                    $cap = max(1, (int)$warehouse['capacity']);
+                                    $stored = (int)$warehouse['stored_units'];
+                                    $util = min(100, round(($stored / $cap) * 100));
+                                ?>
                                 <tr>
-                                    <td><strong><?php echo htmlspecialchars($warehouse['warehouse_code']); ?></strong></td>
-                                    <td><?php echo htmlspecialchars($warehouse['name']); ?></td>
-                                    <td><?php echo htmlspecialchars($warehouse['group_name'] ?? 'Unassigned'); ?></td>
-                                    <td><?php echo htmlspecialchars($warehouse['location'] ?? 'N/A'); ?></td>
-                                    <td><?php echo number_format($warehouse['capacity']); ?></td>
-                                    <td><?php echo number_format($warehouse['stocked_products']); ?></td>
-                                    <td><?php echo number_format($warehouse['stored_units']); ?></td>
+                                    <td>
+                                        <strong style="color:var(--primary); font-family:monospace; font-size:14px;"><?php echo htmlspecialchars($warehouse['warehouse_code']); ?></strong>
+                                        <div style="font-size:11px; color:var(--secondary-text);">ID #<?php echo $warehouse['id']; ?></div>
+                                    </td>
+                                    <td>
+                                        <strong><?php echo htmlspecialchars($warehouse['name']); ?></strong>
+                                        <div style="font-size:12px; color:var(--secondary-text);"><i class="fas fa-map-marker-alt" style="margin-right:4px; opacity:0.6;"></i><?php echo htmlspecialchars($warehouse['location'] ?? 'N/A'); ?></div>
+                                    </td>
+                                    <td>
+                                        <strong><?php echo number_format($warehouse['capacity']); ?></strong>
+                                        <span style="font-size:11px; color:var(--secondary-text);">units</span>
+                                    </td>
+                                    <td>
+                                        <strong><?php echo number_format($stored); ?></strong>
+                                        <div style="font-size:11px; color:var(--secondary-text);"><?php echo $util; ?>% utilized</div>
+                                    </td>
+                                    <td>
+                                        <a href="warehouse-zones.php?view=bins&warehouse_id=<?php echo $warehouse['id']; ?>" class="btn btn-outline btn-sm" title="View &amp; Track Bins">
+                                            <i class="fas fa-cubes"></i> <?php echo number_format($warehouse['bin_count'] ?? 0); ?> Bins
+                                        </a>
+                                    </td>
+                                    <td><?php echo number_format($warehouse['stocked_products']); ?> items</td>
                                     <td>
                                         <span class="warehouse-type-badge <?php echo $warehouse['type']; ?>">
                                             <?php echo ucfirst(str_replace('_', ' ', $warehouse['type'])); ?>
@@ -710,9 +731,9 @@ try {
                                                    class="btn btn-primary btn-sm" title="View Warehouse Inventory">
                                                     <i class="fas fa-boxes-stacked"></i>
                                                 </a>
-                                                <a href="warehouse-zones.php?warehouse_id=<?php echo $warehouse['id']; ?>" 
-                                                   class="btn btn-success btn-sm" title="View Zones">
-                                                    <i class="fas fa-layer-group"></i>
+                                                <a href="warehouse-zones.php?view=bins&warehouse_id=<?php echo $warehouse['id']; ?>" 
+                                                   class="btn btn-success btn-sm" title="Track Bins (SWS)">
+                                                    <i class="fas fa-cubes"></i>
                                                 </a>
                                                 <a href="warehouses.php?action=edit&id=<?php echo $warehouse['id']; ?>" 
                                                    class="btn btn-primary btn-sm" title="Edit">

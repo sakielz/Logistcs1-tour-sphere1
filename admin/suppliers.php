@@ -263,6 +263,8 @@ if ($action === 'import' && $_SERVER['REQUEST_METHOD'] === 'POST') {
 // ============================================
 // CREATE SUPPLIER
 // ============================================
+// CREATE SUPPLIER
+// ============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $supplier_code = isset($_POST['supplier_code']) ? trim($_POST['supplier_code']) : '';
     $company_name = isset($_POST['company_name']) ? trim($_POST['company_name']) : '';
@@ -274,7 +276,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $address = isset($_POST['address']) ? trim($_POST['address']) : '';
     $tax_id = isset($_POST['tax_id']) ? trim($_POST['tax_id']) : '';
     $bank_details = isset($_POST['bank_details']) ? trim($_POST['bank_details']) : '';
-    $payment_terms = isset($_POST['payment_terms']) ? trim($_POST['payment_terms']) : '';
+    $payment_terms = isset($_POST['payment_terms']) ? trim($_POST['payment_terms']) : 'Net 30';
+    $business_reg_number = isset($_POST['business_reg_number']) ? trim($_POST['business_reg_number']) : '';
+    $compliance_status = in_array($_POST['compliance_status'] ?? '', ['compliant', 'pending_review', 'expired'], true) ? $_POST['compliance_status'] : 'compliant';
+    $compliance_expiry = !empty($_POST['compliance_expiry']) ? $_POST['compliance_expiry'] : null;
+    $performance_score = isset($_POST['performance_score']) ? (float)$_POST['performance_score'] : 100.00;
 
     $errors = [];
     if (empty($supplier_code))
@@ -291,8 +297,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     if (empty($errors)) {
         try {
             $pdo->beginTransaction();
-            $stmt = $pdo->prepare("INSERT INTO suppliers (supplier_code, company_name, supplier_type, contact_person, email, phone, address, tax_id, bank_details, payment_terms, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$supplier_code, $company_name, $supplier_type, $contact_person, $email, $phone, $address, $tax_id, $bank_details, $payment_terms, $_SESSION['user_id']]);
+            $stmt = $pdo->prepare("INSERT INTO suppliers (supplier_code, company_name, supplier_type, contact_person, email, phone, address, tax_id, bank_details, payment_terms, business_reg_number, compliance_status, compliance_expiry, performance_score, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$supplier_code, $company_name, $supplier_type, $contact_person, $email, $phone, $address, $tax_id, $bank_details, $payment_terms, $business_reg_number, $compliance_status, $compliance_expiry, $performance_score, $_SESSION['user_id']]);
             $supplierId = (int) $pdo->lastInsertId();
             $ackStmt = $pdo->prepare('INSERT INTO supplier_privacy_acknowledgements (supplier_id, acknowledged_by, acknowledgement_text, policy_version, recorded_by) VALUES (?, ?, ?, ?, ?)');
             $ackStmt->execute([$supplierId, $privacyAcknowledgedBy, $privacyAcknowledgementText, $privacyAcknowledgementVersion, $_SESSION['user_id']]);
@@ -330,7 +336,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'edit') {
     $address = isset($_POST['address']) ? trim($_POST['address']) : '';
     $tax_id = isset($_POST['tax_id']) ? trim($_POST['tax_id']) : '';
     $bank_details = isset($_POST['bank_details']) ? trim($_POST['bank_details']) : '';
-    $payment_terms = isset($_POST['payment_terms']) ? trim($_POST['payment_terms']) : '';
+    $payment_terms = isset($_POST['payment_terms']) ? trim($_POST['payment_terms']) : 'Net 30';
+    $business_reg_number = isset($_POST['business_reg_number']) ? trim($_POST['business_reg_number']) : '';
+    $compliance_status = in_array($_POST['compliance_status'] ?? '', ['compliant', 'pending_review', 'expired'], true) ? $_POST['compliance_status'] : 'compliant';
+    $compliance_expiry = !empty($_POST['compliance_expiry']) ? $_POST['compliance_expiry'] : null;
+    $performance_score = isset($_POST['performance_score']) ? (float)$_POST['performance_score'] : 100.00;
     $status = isset($_POST['status']) ? $_POST['status'] : 'active';
 
     try {
@@ -346,8 +356,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'edit') {
             throw new RuntimeException('Name of the acknowledging supplier representative is required.');
 
         $pdo->beginTransaction();
-        $stmt = $pdo->prepare("UPDATE suppliers SET supplier_code = ?, company_name = ?, supplier_type = ?, contact_person = ?, email = ?, phone = ?, address = ?, tax_id = ?, bank_details = ?, payment_terms = ?, status = ? WHERE id = ?");
-        $stmt->execute([$supplier_code, $company_name, $supplier_type, $contact_person, $email, $phone, $address, $tax_id, $bank_details, $payment_terms, $status, $id]);
+        $stmt = $pdo->prepare("UPDATE suppliers SET supplier_code = ?, company_name = ?, supplier_type = ?, contact_person = ?, email = ?, phone = ?, address = ?, tax_id = ?, bank_details = ?, payment_terms = ?, business_reg_number = ?, compliance_status = ?, compliance_expiry = ?, performance_score = ?, status = ? WHERE id = ?");
+        $stmt->execute([$supplier_code, $company_name, $supplier_type, $contact_person, $email, $phone, $address, $tax_id, $bank_details, $payment_terms, $business_reg_number, $compliance_status, $compliance_expiry, $performance_score, $status, $id]);
         if ($renewAcknowledgement) {
             $ackStmt = $pdo->prepare('INSERT INTO supplier_privacy_acknowledgements (supplier_id, acknowledged_by, acknowledgement_text, policy_version, recorded_by) VALUES (?, ?, ?, ?, ?)');
             $ackStmt->execute([$id, $privacyAcknowledgedBy, $privacyAcknowledgementText, $privacyAcknowledgementVersion, $_SESSION['user_id']]);
@@ -382,12 +392,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'add_performance') {
         $stmt = $pdo->prepare("INSERT INTO supplier_performance (supplier_id, period, on_time_delivery, quality_rate, response_time) VALUES (?, ?, ?, ?, ?)");
         $stmt->execute([$supplier_id, $period, $on_time_delivery, $quality_rate, $response_time]);
 
-        // Update supplier rating
-        $stmt = $pdo->prepare("UPDATE suppliers SET rating = (SELECT AVG((on_time_delivery + quality_rate + response_time)/3) FROM supplier_performance WHERE supplier_id = ?) WHERE id = ?");
-        $stmt->execute([$supplier_id, $supplier_id]);
+        // Update supplier rating and performance_score
+        $score = round(($on_time_delivery + $quality_rate + $response_time) / 3, 2);
+        $rating = round($score / 20, 1); // out of 5 stars
+        $stmt = $pdo->prepare("UPDATE suppliers SET rating = ?, performance_score = ? WHERE id = ?");
+        $stmt->execute([$rating, $score, $supplier_id]);
 
-        logAudit($_SESSION['user_id'], 'add_performance', 'supplier', "Added performance record for supplier ID: $supplier_id");
-        $_SESSION['success'] = "Performance record added successfully!";
+        logAudit($_SESSION['user_id'], 'add_performance', 'supplier', "Added performance record for supplier ID: $supplier_id (Score: $score%)");
+        $_SESSION['success'] = "Performance record added successfully! Score updated to $score%.";
         header('Location: suppliers.php');
         exit();
     } catch (PDOException $e) {
@@ -479,7 +491,7 @@ $ratingFilter = isset($_GET['rating']) ? (float) $_GET['rating'] : '';
 $sortField = isset($_GET['sort']) ? $_GET['sort'] : 'company_name';
 $sortOrder = isset($_GET['order']) && $_GET['order'] === 'asc' ? 'ASC' : 'DESC';
 
-$allowedSortFields = ['supplier_code', 'company_name', 'contact_person', 'email', 'rating', 'status', 'created_at'];
+$allowedSortFields = ['supplier_code', 'company_name', 'contact_person', 'email', 'rating', 'performance_score', 'tax_id', 'payment_terms', 'status', 'created_at'];
 if (!in_array($sortField, $allowedSortFields)) {
     $sortField = 'company_name';
 }
@@ -1949,25 +1961,30 @@ $recommendedCount = count(array_filter($allActiveSuppliers, function ($s) {
                                 <th>Supplier Type</th>
                                 <th onclick="sortTable('contact_person')"
                                     class="<?php echo $sortField === 'contact_person' ? 'sorted' : ''; ?>">
-                                    Contact <span
+                                    Contact Person <span
                                         class="sort-icon"><?php echo $sortField === 'contact_person' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                 </th>
-                                <th onclick="sortTable('email')"
-                                    class="<?php echo $sortField === 'email' ? 'sorted' : ''; ?>">
-                                    Email <span
-                                        class="sort-icon"><?php echo $sortField === 'email' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                <th onclick="sortTable('tax_id')"
+                                    class="<?php echo $sortField === 'tax_id' ? 'sorted' : ''; ?>">
+                                    Tax ID <span
+                                        class="sort-icon"><?php echo $sortField === 'tax_id' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                 </th>
-                                <th onclick="sortTable('rating')"
-                                    class="<?php echo $sortField === 'rating' ? 'sorted' : ''; ?>">
-                                    Rating <span
-                                        class="sort-icon"><?php echo $sortField === 'rating' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                <th onclick="sortTable('payment_terms')"
+                                    class="<?php echo $sortField === 'payment_terms' ? 'sorted' : ''; ?>">
+                                    Payment Terms <span
+                                        class="sort-icon"><?php echo $sortField === 'payment_terms' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                 </th>
+                                <th onclick="sortTable('performance_score')"
+                                    class="<?php echo $sortField === 'performance_score' ? 'sorted' : ''; ?>">
+                                    Performance Score <span
+                                        class="sort-icon"><?php echo $sortField === 'performance_score' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
+                                </th>
+                                <th>Compliance</th>
                                 <th onclick="sortTable('status')"
                                     class="<?php echo $sortField === 'status' ? 'sorted' : ''; ?>">
                                     Status <span
                                         class="sort-icon"><?php echo $sortField === 'status' ? ($sortOrder === 'ASC' ? '▲' : '▼') : '⇅'; ?></span>
                                 </th>
-                                <th>Privacy Acknowledgement</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
@@ -1976,26 +1993,49 @@ $recommendedCount = count(array_filter($allActiveSuppliers, function ($s) {
                                 <?php foreach ($paginatedSuppliers as $supplier): ?>
                                     <tr>
                                         <td><strong><?php echo htmlspecialchars($supplier['supplier_code']); ?></strong></td>
-                                        <td><?php echo htmlspecialchars($supplier['company_name']); ?></td>
-                                        <td><?php echo htmlspecialchars(ucfirst(str_replace('_', ' ', $supplier['supplier_type'] ?? 'general'))); ?>
-                                        </td>
-                                        <td><?php echo htmlspecialchars($supplier['contact_person'] ?? 'N/A'); ?></td>
-                                        <td><?php echo htmlspecialchars($supplier['email']); ?></td>
                                         <td>
-                                            <?php if ($supplier['rating'] > 0): ?>
-                                                <span class="rating-stars">
+                                            <strong><?php echo htmlspecialchars($supplier['company_name']); ?></strong>
+                                            <div style="font-size: 11px; color: var(--secondary-text);"><?php echo htmlspecialchars(ucfirst(str_replace('_', ' ', $supplier['supplier_type'] ?? 'general'))); ?></div>
+                                        </td>
+                                        <td>
+                                            <?php echo htmlspecialchars($supplier['contact_person'] ?? 'N/A'); ?>
+                                            <div style="font-size: 11px; color: var(--secondary-text);"><?php echo htmlspecialchars($supplier['email'] ?? ''); ?></div>
+                                        </td>
+                                        <td>
+                                            <code><?php echo htmlspecialchars($supplier['tax_id'] ?: 'N/A'); ?></code>
+                                        </td>
+                                        <td>
+                                            <span style="font-weight: 500; font-size: 12px;"><?php echo htmlspecialchars($supplier['payment_terms'] ?: 'Net 30'); ?></span>
+                                        </td>
+                                        <td>
+                                            <?php 
+                                            $perfScore = isset($supplier['performance_score']) ? (float)$supplier['performance_score'] : ((float)($supplier['rating'] ?? 0) * 20);
+                                            $ratingVal = (float)($supplier['rating'] ?? 0);
+                                            ?>
+                                            <div style="display: flex; align-items: center; gap: 6px;">
+                                                <strong style="color: <?php echo $perfScore >= 80 ? 'var(--accent)' : ($perfScore >= 60 ? 'var(--warning)' : 'var(--danger)'); ?>;">
+                                                    <?php echo number_format($perfScore, 1); ?>%
+                                                </strong>
+                                                <span class="rating-stars" style="font-size: 11px;">
                                                     <?php
-                                                    $stars = round($supplier['rating']);
+                                                    $stars = round($ratingVal > 0 ? $ratingVal : ($perfScore / 20));
                                                     for ($i = 1; $i <= 5; $i++) {
                                                         echo $i <= $stars ? '★' : '☆';
                                                     }
                                                     ?>
                                                 </span>
-                                                <div style="font-size: 12px; color: var(--secondary-text);">
-                                                    <?php echo number_format($supplier['rating'], 1); ?>
-                                                </div>
-                                            <?php else: ?>
-                                                <span style="color: var(--secondary-text);">No rating</span>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <?php 
+                                            $compStatus = $supplier['compliance_status'] ?? 'compliant';
+                                            $compBadge = $compStatus === 'compliant' ? 'status-active' : ($compStatus === 'pending_review' ? 'status-suspended' : 'status-inactive');
+                                            ?>
+                                            <span class="status-badge <?php echo $compBadge; ?>" style="font-size: 11px;">
+                                                <?php echo ucfirst(str_replace('_', ' ', $compStatus)); ?>
+                                            </span>
+                                            <?php if (!empty($supplier['business_reg_number'])): ?>
+                                                <div style="font-size: 10px; color: var(--secondary-text);">Reg: <?php echo htmlspecialchars($supplier['business_reg_number']); ?></div>
                                             <?php endif; ?>
                                         </td>
                                         <td>
@@ -2005,17 +2045,6 @@ $recommendedCount = count(array_filter($allActiveSuppliers, function ($s) {
                                             ?>">
                                                 <?php echo ucfirst($supplier['status']); ?>
                                             </span>
-                                        </td>
-                                        <td>
-                                            <?php if (!empty($supplier['privacy_acknowledged_at'])): ?>
-                                                <span class="status-badge status-active">Recorded</span>
-                                                <div style="font-size:11px;color:var(--secondary-text);">
-                                                    <?php echo htmlspecialchars($supplier['privacy_acknowledged_by']); ?><br>
-                                                    <?php echo htmlspecialchars($supplier['privacy_acknowledged_at']); ?>
-                                                </div>
-                                            <?php else: ?>
-                                                <span class="status-badge status-inactive">Not recorded</span>
-                                            <?php endif; ?>
                                         </td>
                                         <td>
                                             <div class="action-buttons">
@@ -2191,9 +2220,38 @@ $recommendedCount = count(array_filter($allActiveSuppliers, function ($s) {
                                 value="<?php echo isset($editSupplier['bank_details']) ? htmlspecialchars($editSupplier['bank_details']) : ''; ?>">
                         </div>
                         <div class="form-group">
-                            <label>Payment Terms</label>
-                            <input type="text" name="payment_terms"
+                            <label>Payment Terms (Profile)</label>
+                            <input type="text" name="payment_terms" list="paymentTermsOptions"
                                 value="<?php echo isset($editSupplier['payment_terms']) ? htmlspecialchars($editSupplier['payment_terms']) : 'Net 30'; ?>">
+                            <datalist id="paymentTermsOptions">
+                                <option value="Net 15">
+                                <option value="Net 30">
+                                <option value="Net 60">
+                                <option value="Cash on Delivery (COD)">
+                                <option value="50% Advance, 50% on Delivery">
+                                <option value="100% Pre-payment">
+                            </datalist>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
+                        <div class="form-group">
+                            <label>Business Reg / Permit #</label>
+                            <input type="text" name="business_reg_number" placeholder="DTI / SEC / Mayor's Permit"
+                                value="<?php echo isset($editSupplier['business_reg_number']) ? htmlspecialchars($editSupplier['business_reg_number']) : ''; ?>">
+                        </div>
+                        <div class="form-group">
+                            <label>Compliance Status</label>
+                            <select name="compliance_status">
+                                <option value="compliant" <?php echo (!isset($editSupplier['compliance_status']) || $editSupplier['compliance_status'] === 'compliant') ? 'selected' : ''; ?>>Compliant</option>
+                                <option value="pending_review" <?php echo (isset($editSupplier['compliance_status']) && $editSupplier['compliance_status'] === 'pending_review') ? 'selected' : ''; ?>>Pending Review</option>
+                                <option value="expired" <?php echo (isset($editSupplier['compliance_status']) && $editSupplier['compliance_status'] === 'expired') ? 'selected' : ''; ?>>Expired</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Compliance Expiry Date</label>
+                            <input type="date" name="compliance_expiry"
+                                value="<?php echo isset($editSupplier['compliance_expiry']) ? htmlspecialchars($editSupplier['compliance_expiry']) : ''; ?>">
                         </div>
                     </div>
 

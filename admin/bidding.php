@@ -225,54 +225,16 @@ try {
     // demo seeding error ignored
 }
 
-// ── Handle Actions ───────────────────────────────────────────────────────────
-$action = $_GET['action'] ?? '';
-$error = '';
-$success = '';
-
-// 1. Create New Tender
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create_tender') {
-    $tender_code = trim($_POST['tender_code'] ?? '');
-    $title = trim($_POST['title'] ?? '');
-    $tender_type = $_POST['tender_type'] ?? 'spot_auction';
-    $transport_mode = $_POST['transport_mode'] ?? 'road';
-    $origin = trim($_POST['origin'] ?? '');
-    $destination = trim($_POST['destination'] ?? '');
-    $cargo_type = $_POST['cargo_type'] ?? 'standard_dry';
-    $estimated_volume = trim($_POST['estimated_volume'] ?? '');
-    $target_rate = (float)($_POST['target_rate'] ?? 0);
-    $deadline = trim($_POST['deadline'] ?? '');
-    $service_level_req = trim($_POST['service_level_req'] ?? '');
-    $rate_sheet_specs = trim($_POST['rate_sheet_specs'] ?? '');
-    $notes = trim($_POST['notes'] ?? '');
-
-    if ($tender_code === '') {
-        $prefix = $tender_type === 'spot_auction' ? 'SPOT-' : 'TND-';
-        $tender_code = $prefix . date('Ymd') . '-' . rand(100, 999);
-    }
-
-    try {
-        if ($title === '' || $origin === '' || $destination === '') {
-            throw new RuntimeException('Please enter a title, origin, and destination.');
-        }
-
-        $stmt = $pdo->prepare("INSERT INTO bidding_tenders 
-            (tender_code, title, tender_type, transport_mode, origin, destination, cargo_type, estimated_volume, target_rate, deadline, service_level_req, rate_sheet_specs, notes, status, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)");
-        $stmt->execute([
-            $tender_code, $title, $tender_type, $transport_mode, $origin, $destination, 
-            $cargo_type, $estimated_volume, $target_rate, $deadline, $service_level_req, 
-            $rate_sheet_specs, $notes, $currentUserId
-        ]);
-
-        logAudit($currentUserId, 'create_tender', 'bidding', "Created freight tender $tender_code: $title");
-        $_SESSION['success'] = "Freight Tender <strong>$tender_code</strong> created successfully!";
-        header('Location: bidding.php');
-        exit();
-    } catch (Throwable $e) {
-        $error = "Error creating tender: " . $e->getMessage();
-    }
+// ── Handle Actions (Module Disabled) ──────────────────────────────────────────
+$isBiddingDisabled = true;
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $_SESSION['error'] = 'The Freight Bidding module has been disabled. Supplier quotes, bidding evaluation, and contract terms tracking are now managed under Procurement & Sourcing Management (PSM).';
+    header('Location: requisitions.php');
+    exit();
 }
+$action = $_GET['action'] ?? '';
+$error = 'Notice: Standalone Freight Bidding (bidding.php) has been disabled. Sourcing quotes and bidding evaluations have been consolidated into Procurement & Sourcing Management (PSM).';
+$success = '';
 
 // 2. Submit Carrier Bid
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'submit_bid') {
@@ -641,15 +603,36 @@ $carriersList = $pdo->query("SELECT id, company_name, rating FROM suppliers WHER
         <?php require_once __DIR__ . '/partials/sidebar.php'; ?>
 
         <main class="main-content">
+            <!-- Disabled Module Notice Banner -->
+            <div style="background: linear-gradient(135deg, #FEF2F2, #FEE2E2); border: 1.5px solid #FCA5A5; border-radius: 12px; padding: 18px 24px; margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; gap: 20px; box-shadow: 0 4px 12px rgba(239, 68, 68, 0.08);">
+                <div style="display: flex; align-items: flex-start; gap: 14px;">
+                    <i class="fas fa-ban" style="font-size: 24px; color: #DC2626; margin-top: 3px;"></i>
+                    <div>
+                        <h3 style="margin: 0 0 4px 0; color: #991B1B; font-size: 16px; font-weight: 700;">Module Disabled — Freight Bidding (bidding.php)</h3>
+                        <p style="margin: 0; color: #B91C1C; font-size: 13px; line-height: 1.5;">
+                            This module has been disabled per SCIM restructuring requirements. Supplier quotes, bidding evaluation, and carrier contract terms are consolidated under <strong>Procurement &amp; Sourcing Management (PSM)</strong>.
+                        </p>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 10px; flex-shrink: 0;">
+                    <a href="requisitions.php" class="btn btn-primary" style="background: #2563EB; border-color: #2563EB; font-size: 13px; padding: 8px 16px;">
+                        <i class="fas fa-clipboard-list"></i> Go to PSM Requisitions
+                    </a>
+                    <a href="contracts.php" class="btn btn-outline" style="font-size: 13px; padding: 8px 16px;">
+                        <i class="fas fa-file-signature"></i> View Contracts
+                    </a>
+                </div>
+            </div>
+
             <!-- Header -->
-            <div class="page-header">
+            <div class="page-header" style="opacity: 0.85;">
                 <div>
-                    <h1><i class="fas fa-gavel" style="color: var(--primary);"></i> Freight Sourcing & Logistics Bidding</h1>
-                    <p>Automate freight service procurement from carriers & forwarders. Standardize rate sheets, host spot auctions & contract tenders, evaluate carrier performance matrix, and push winning rates directly into TMS shipments.</p>
+                    <h1><i class="fas fa-gavel" style="color: #6B7280;"></i> Freight Sourcing &amp; Logistics Bidding <span class="badge" style="background: #DC2626; color: #fff; font-size: 11px; vertical-align: middle; margin-left: 8px;">DISABLED</span></h1>
+                    <p>Archived / Read-Only view of historical freight solicitations and spot auctions. Tender submissions and new bids are disabled.</p>
                 </div>
                 <div style="display:flex; gap:10px;">
-                    <button type="button" onclick="openCreateTenderModal()" class="btn btn-primary">
-                        <i class="fas fa-plus-circle"></i> Create Freight Tender
+                    <button type="button" class="btn btn-outline" disabled style="opacity: 0.5; cursor: not-allowed;" title="Module is disabled">
+                        <i class="fas fa-lock"></i> New Tender (Disabled)
                     </button>
                 </div>
             </div>
