@@ -70,16 +70,29 @@ if (is_file($envFile)) {
     }
 }
 
-$driver = getenv('DB_CONNECTION') ?: ($env['DB_CONNECTION'] ?? 'pgsql');
-$host = getenv('DB_HOST') ?: ($env['DB_HOST'] ?? 'aws-0-ap-northeast-1.pooler.supabase.com');
-$port = getenv('DB_PORT') ?: ($env['DB_PORT'] ?? '6543');
-$dbName = getenv('DB_DATABASE') ?: ($env['DB_DATABASE'] ?? 'postgres');
-$username = getenv('DB_USERNAME') ?: ($env['DB_USERNAME'] ?? 'postgres.zuwwnhwhdhtunigajswd');
-$password = getenv('DB_PASSWORD') ?: ($env['DB_PASSWORD'] ?? 'WrT2AyxJF3ZHDw8F');
+$driver = getenv('DB_CONNECTION') ?: ($env['DB_CONNECTION'] ?? null);
+$rawDbUrl = getenv('DATABASE_URL') ?: ($env['DATABASE_URL'] ?? (getenv('DB_URL') ?: ($env['DB_URL'] ?? null)));
 
-// Support Supabase / cloud database connection URLs (DB_URL / DATABASE_URL)
-$dbUrl = getenv('DATABASE_URL') ?: ($env['DATABASE_URL'] ?? (getenv('DB_URL') ?: ($env['DB_URL'] ?? 'postgresql://postgres.zuwwnhwhdhtunigajswd:WrT2AyxJF3ZHDw8F@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres')));
-if (!empty($dbUrl)) {
+// Only use default Supabase cloud connection if driver is pgsql (or unset) and no explicit database credentials were set
+$isExplicitNonPgsql = in_array(strtolower((string)$driver), ['mysql', 'mariadb', 'sqlite'], true);
+$hasExplicitDbConfig = !empty(getenv('DB_HOST')) || !empty($env['DB_HOST']) || !empty(getenv('DB_DATABASE')) || !empty($env['DB_DATABASE']);
+
+if (empty($driver) && empty($rawDbUrl) && !$hasExplicitDbConfig) {
+    $driver = 'pgsql';
+    $rawDbUrl = 'postgresql://postgres.zuwwnhwhdhtunigajswd:WrT2AyxJF3ZHDw8F@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres';
+} elseif (empty($driver)) {
+    $driver = 'pgsql';
+}
+
+$host = getenv('DB_HOST') ?: ($env['DB_HOST'] ?? ($driver === 'pgsql' ? 'aws-0-ap-northeast-1.pooler.supabase.com' : '127.0.0.1'));
+$port = getenv('DB_PORT') ?: ($env['DB_PORT'] ?? ($driver === 'pgsql' ? '6543' : '3306'));
+$dbName = getenv('DB_DATABASE') ?: ($env['DB_DATABASE'] ?? ($driver === 'pgsql' ? 'postgres' : 'forge'));
+$username = getenv('DB_USERNAME') ?: ($env['DB_USERNAME'] ?? ($driver === 'pgsql' ? 'postgres.zuwwnhwhdhtunigajswd' : 'root'));
+$password = getenv('DB_PASSWORD') ?: ($env['DB_PASSWORD'] ?? ($driver === 'pgsql' ? 'WrT2AyxJF3ZHDw8F' : ''));
+
+// Support cloud database connection URLs (DB_URL / DATABASE_URL) without hijacking MySQL/MariaDB
+$dbUrl = $rawDbUrl;
+if (!empty($dbUrl) && (!$isExplicitNonPgsql || !empty(getenv('DATABASE_URL')) || !empty($env['DATABASE_URL']))) {
     $parsedUrl = parse_url($dbUrl);
     if ($parsedUrl) {
         $urlScheme = strtolower($parsedUrl['scheme'] ?? '');
@@ -88,6 +101,7 @@ if (!empty($dbUrl)) {
             if (empty($port) || $port === '3306') $port = '6543';
         } elseif ($urlScheme === 'mysql') {
             $driver = 'mysql';
+            if (empty($port) || $port === '6543') $port = '3306';
         }
         if (!empty($parsedUrl['host'])) $host = $parsedUrl['host'];
         if (!empty($parsedUrl['port'])) $port = (string)$parsedUrl['port'];
@@ -733,6 +747,153 @@ if (!function_exists('initializePostgresDatabase')) {
     }
 }
 
+if (!function_exists('initializeMysqlDatabase')) {
+    function initializeMysqlDatabase(PDO $pdo) {
+        try {
+            $pdo->exec("CREATE TABLE IF NOT EXISTS users (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(100) NOT NULL UNIQUE,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                password VARCHAR(255) NOT NULL,
+                role VARCHAR(50) DEFAULT 'admin',
+                full_name VARCHAR(255) NOT NULL,
+                is_active TINYINT(1) DEFAULT 1,
+                is_archived TINYINT(1) DEFAULT 0,
+                two_factor_secret TEXT NULL,
+                two_factor_enabled TINYINT(1) DEFAULT 0,
+                two_factor_confirmed_at DATETIME NULL,
+                two_factor_recovery_codes_generated_at DATETIME NULL,
+                two_factor_time_offset INT DEFAULT 0,
+                last_login DATETIME NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_users_email (email),
+                INDEX idx_users_role (role),
+                INDEX idx_users_archived (is_archived)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+
+            $pdo->exec("CREATE TABLE IF NOT EXISTS user_recovery_codes (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                code_hash VARCHAR(255) NOT NULL,
+                used_at DATETIME NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_user_recovery_user (user_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+
+            $pdo->exec("CREATE TABLE IF NOT EXISTS two_factor_rate_limits (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                identifier VARCHAR(150) NOT NULL,
+                attempt_time BIGINT NOT NULL,
+                INDEX idx_2fa_identifier (identifier)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+
+            $pdo->exec("CREATE TABLE IF NOT EXISTS user_sessions (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                token VARCHAR(255) NOT NULL,
+                ip_address VARCHAR(45),
+                user_agent TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at DATETIME NULL,
+                INDEX idx_sessions_token (token),
+                INDEX idx_sessions_user_id (user_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+
+            $pdo->exec("CREATE TABLE IF NOT EXISTS system_settings (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                setting_key VARCHAR(100) NOT NULL UNIQUE,
+                setting_value TEXT,
+                setting_group VARCHAR(50),
+                description TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+
+            $pdo->exec("CREATE TABLE IF NOT EXISTS audit_logs (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id BIGINT NULL,
+                action VARCHAR(100) NOT NULL,
+                module VARCHAR(50) NOT NULL,
+                description TEXT,
+                ip_address VARCHAR(45),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_audit_user (user_id),
+                INDEX idx_audit_module (module)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+
+            // Ensure core users exist and have working passwords
+            $defaultAdminHash = '$2y$10$WcY/9xLuH2YbFNcIa0vY4uSVJNclz85LYJwPuAfiU/0pRAzS1x3LS'; // admin@08
+            $admin3Hash = '$2y$10$Fq5dIZyuCWj/DWfmLbrAAej7hDeXBxgoXn8n4vKQZjR7dMtwzUf.e'; // admin123
+            $alHash = '$2y$10$JhNiWzilRjUHkxvY92JixOXGO0QG..mu4RX.uABGq5mYvKwkWCg2.'; // password
+            $standardTeamHash = '$2y$10$Fq5dIZyuCWj/DWfmLbrAAej7hDeXBxgoXn8n4vKQZjR7dMtwzUf.e'; // admin123
+            $podnumHash = '$2y$10$geeAeExDI9nN3uE947Yygep3wUuI9mE4WqY73vV1kH7mN1p4ZqZeq'; // podnum123
+
+            $coreUsers = [
+                ['admin', 'admin@globalscm.com', $defaultAdminHash, 'admin', 'System Administrator'],
+                ['admin3', 'admin3@globalscm.com', $admin3Hash, 'admin', 'Logistics Admin 3'],
+                ['al', 'johnphaulbaytamo@gmail.com', $alHash, 'admin', 'John Phaul Baytamo'],
+                ['JayC', 'jayclhord8@gmail.com', $standardTeamHash, 'admin', 'JayC Staff'],
+                ['Lenzy', 'lenzy@globalscm.com', $standardTeamHash, 'procurement_specialist', 'Lenzy Specialist'],
+                ['Luis', 'luis@globalscm.com', $standardTeamHash, 'warehouse_manager', 'Luis Manager'],
+                ['Ibarra', 'ibarra@globalscm.com', $standardTeamHash, 'inventory_controller', 'Ibarra Controller'],
+                ['Maria', 'maria@globalscm.com', $standardTeamHash, 'logistics_coordinator', 'Maria Coordinator'],
+                ['Nechol', 'nechol@globalscm.com', $standardTeamHash, 'logistics_coordinator', 'Nechol Coordinator'],
+                ['Peter', 'peter@globalscm.com', $standardTeamHash, 'logistics_coordinator', 'Peter Coordinator'],
+                ['podnum', 'podnum!@email.com', $podnumHash, 'admin', 'Podnum Admin'],
+                ['podnumadmin', 'podnum@email.com', $podnumHash, 'admin', 'Podnum Admin'],
+            ];
+
+            foreach ($coreUsers as $u) {
+                [$uName, $uEmail, $uPass, $uRole, $uFull] = $u;
+                try {
+                    $uCheck = $pdo->prepare("SELECT id FROM users WHERE LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?) LIMIT 1");
+                    $uCheck->execute([$uName, $uEmail]);
+                    $existingId = $uCheck->fetchColumn();
+                    if (!$existingId) {
+                        $insUser = $pdo->prepare("
+                            INSERT INTO users (username, email, password, role, full_name, is_active, is_archived, two_factor_enabled)
+                            VALUES (?, ?, ?, ?, ?, 1, 0, 0)
+                        ");
+                        $insUser->execute([$uName, $uEmail, $uPass, $uRole, $uFull]);
+                    } else {
+                        $upUser = $pdo->prepare("
+                            UPDATE users SET is_active = 1, is_archived = 0, two_factor_enabled = 0
+                            WHERE id = ?
+                        ");
+                        $upUser->execute([$existingId]);
+                    }
+                } catch (Throwable $userErr) {
+                    // Ignore user insert errors
+                }
+            }
+
+            $defaultSettings = [
+                ['currency_symbol', '₱', 'general', 'Currency symbol used throughout the system'],
+                ['currency_code', 'PHP', 'general', 'ISO currency code'],
+                ['theme', 'light', 'ui', 'System theme (light/dark)'],
+                ['barcode_format', 'CODE128', 'general', 'Default barcode format for products'],
+                ['auto_serial_number', 'true', 'inventory', 'Automatically generate serial numbers'],
+                ['report_ai_enabled', 'true', 'ai', 'Enable AI-powered daily reports'],
+                ['show_warehousing', 'true', 'ui', 'Show/hide warehousing module'],
+                ['show_inventory', 'true', 'ui', 'Show/hide inventory module'],
+                ['show_procurement', 'true', 'ui', 'Show/hide procurement module'],
+                ['show_suppliers', 'true', 'ui', 'Show/hide supplier module'],
+                ['show_purchase_orders', 'true', 'ui', 'Show/hide purchase orders module'],
+                ['show_logistics', 'true', 'ui', 'Show/hide logistics module']
+            ];
+
+            foreach ($defaultSettings as $setting) {
+                [$key, $value, $group, $desc] = $setting;
+                try {
+                    $pdo->prepare("INSERT IGNORE INTO system_settings (setting_key, setting_value, setting_group, description) VALUES (?, ?, ?, ?)")->execute([$key, $value, $group, $desc]);
+                } catch (Throwable $sErr) {}
+            }
+        } catch (Throwable $e) {
+            error_log("[MYSQL INIT NOTICE] Automatic schema bootstrap: " . $e->getMessage());
+        }
+    }
+}
+
 $pdo = null;
 try {
     if (strtolower($driver) === 'sqlite') {
@@ -815,6 +976,7 @@ try {
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => false,
         ]);
+        initializeMysqlDatabase($pdo);
     }
 } catch (Throwable $e) {
     error_log("[DATABASE CONNECTION ERROR] Connection to {$driver} failed: " . $e->getMessage());
